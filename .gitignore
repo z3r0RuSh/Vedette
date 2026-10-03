@@ -1,0 +1,62 @@
+# Rendered secrets -- never commit. Template with 1Password refs is .env.template.
+.env
+.env.*
+!.env.template
+
+# Secret and credential material -- never commit
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.crt
+*.cer
+*.der
+*secret*
+*credential*
+*token*
+*vault*
+secrets/
+secrets.env
+credentials.json
+client_secret*.json
+oauth*.json
+*-key.json
+service-account*.json
+.aws/
+.ssh/
+
+# 1Password
+*.1password
+*.opvault
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# Run output (assessment reports may contain target data)
+runs/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Node (if the UI ever gets a build step)
+node_modules/

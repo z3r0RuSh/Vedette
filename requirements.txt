@@ -1,0 +1,6 @@
+requests>=2.31
+pyyaml>=6.0
+fastapi>=0.110
+uvicorn>=0.29
+itsdangerous>=2.1
+pytest>=8.0

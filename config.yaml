@@ -1,0 +1,65 @@
+# Vedette configuration. API keys and secrets come from env vars only --
+# never put key material in this file.
+
+# Research legs: the hosted model that does web research (needs web search).
+research_backend:
+  provider: anthropic          # anthropic | openai | ollama
+  model: null                 # null = provider default; override with an id
+  # base_url: null            # for OpenAI-compatible endpoints (Fireworks, Baseten, ...)
+  # api_key_env: null         # env var holding the key (default OPENAI_API_KEY / ANTHROPIC_API_KEY)
+
+# Triage + synthesis: local-capable model (keeps synthesis on-machine).
+synthesis_backend:
+  provider: ollama
+  model: null
+
+ollama_url: http://localhost:11434
+
+# Use server-side web search on the research legs when the backend supports it
+# (Anthropic web_search tool, OpenAI Responses API web_search).
+web_search: true
+
+# Built-in web search run by the research legs before each axis model call.
+# This is what makes company/product/domain name-search work with every
+# backend, including local Ollama. Keyless DuckDuckGo by default; set
+# provider to serper or bing and put the key in 1Password (see .env.template).
+tool_search: true
+search:
+  provider: auto        # auto | duckduckgo | serper | bing
+  max_results: 6        # results kept per query
+  rate_limit_s: 1.0     # politeness delay between search requests
+  timeout: 30
+
+# Web GUI output directory (run history lives here).
+runs_dir: runs
+
+server:
+  host: 127.0.0.1
+  port: 8790
+
+auth:
+  # Google OAuth allowlist. Anyone not on this list is rejected at login.
+  # Env override: OSINT_ALLOWED_GOOGLE_EMAILS="a@x.com,b@x.com" (comma-separated).
+  allowed_google_emails: []
+  # Signed-cookie session lifetime.
+  session_timeout_minutes: 720
+  # Local password failover: when no OAuth/OIDC provider is configured and
+  # OSINT_LOCAL_PASSWORD is set, the login page offers a password form.
+  # Never active alongside a configured provider; never active without the
+  # password set (fail closed). Store the password in 1Password, never here.
+  local:
+    enabled: true
+    password_env: OSINT_LOCAL_PASSWORD
+  google:
+    # Client ID from Google Cloud console. Secret comes from env only.
+    client_id: null
+    client_secret_env: OSINT_GOOGLE_CLIENT_SECRET
+  oidc:
+    enabled: false
+    issuer: null              # e.g. https://accounts.example.com
+    client_id: null           # or OSINT_OIDC_CLIENT_ID env
+    client_secret_env: OSINT_OIDC_CLIENT_SECRET
+    # Access control: either list wins. Env overrides: OSINT_ALLOWED_EMAILS,
+    # OSINT_ALLOWED_DOMAINS (comma-separated).
+    allowed_emails: []
+    allowed_domains: []

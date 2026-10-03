@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Vedette</title>
+<link rel="stylesheet" href="/ui/styles.css">
+</head>
+<body>
+<header>
+  <h1>Vedette</h1>
+  <div class="userbox">
+    <span id="user-email"></span>
+    <button id="logout-btn" class="btn small">Sign out</button>
+  </div>
+</header>
+<main>
+  <section class="card">
+    <h2>New assessment</h2>
+    <form id="assess-form">
+      <label>Targets (one per line)
+        <textarea id="f-targets" rows="4" required placeholder="GreenNode&#10;nginx|software&#10;example.com|domain&#10;Acme=https://acme.com"></textarea>
+      </label>
+      <p class="muted small">Line format: <code>Name</code>, <code>Name=https://url</code>,
+        or add a type suffix: <code>Name|software</code>, <code>https://example.com|domain</code>.
+        Bare URLs are treated as domains.</p>
+      <div class="row">
+        <label>Default target type
+          <select id="f-type">
+            <option value="company">company</option>
+            <option value="software">software</option>
+            <option value="domain">domain</option>
+          </select>
+        </label>
+        <label>Research backend
+          <select id="f-provider">
+            <option value="">config default</option>
+            <option value="anthropic">anthropic (Claude)</option>
+            <option value="openai">openai (ChatGPT)</option>
+            <option value="ollama">ollama (local)</option>
+          </select>
+        </label>
+      </div>
+      <label>Model (optional)
+        <input id="f-model" type="text" placeholder="model id override">
+      </label>
+      <button type="submit" class="btn primary">Run assessment</button>
+      <p id="form-error" class="error"></p>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>Runs</h2>
+    <div id="run-list"><p class="muted">Loading…</p></div>
+  </section>
+
+  <section class="card hidden" id="detail-card">
+    <h2 id="detail-title">Run detail</h2>
+    <div id="run-target-progress"></div>
+    <div id="run-progress" class="hidden">
+      <div class="progress"><div id="progress-bar"></div></div>
+      <p id="progress-detail" class="muted"></p>
+    </div>
+    <p id="detail-error" class="error"></p>
+    <div id="report-tabs"></div>
+    <div id="report-body" class="report"></div>
+  </section>
+</main>
+<script src="/ui/app.js"></script>
+</body>
+</html>
