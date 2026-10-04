@@ -45,7 +45,7 @@ def _now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def _domain_of(name, url):
+def domain_of(name, url):
     """Best-effort domain for query templating, from the URL, name, or email."""
     for raw in (url or "", name or ""):
         raw = raw.strip()
@@ -444,16 +444,22 @@ class SearchClient:
         return results
 
 
-def search_for_axis(target_type, axis, name, url, client, audit_fn):
+def search_for_axis(target_type, axis, name, url, client, audit_fn,
+                    fetch_top_n=2, fetch_max_chars=6000):
     """Run the axis queries and build a context block for the research prompt.
 
     Never raises: per-query failures are audited as web_search_error and the
     leg continues with whatever results were gathered. Returns "" when no
     results were found.
+
+    The top-ranked result pages are fetched directly so the model can
+    distinguish pages read live from search-index snippets.
     """
     templates = (AXIS_QUERIES.get(target_type) or {}).get(axis) or []
-    domain = _domain_of(name, url)
+    domain = domain_of(name, url)
     blocks = []
+    top_results = []
+    seen_urls = set()
     for template in templates:
         query = template.format(name=name or "", domain=domain)
         try:
@@ -479,10 +485,31 @@ def search_for_axis(target_type, axis, name, url, client, audit_fn):
                                            r["url"]))
             if r["snippet"]:
                 lines.append("   %s" % r["snippet"])
+            u = r.get("url")
+            if u and u not in seen_urls:
+                seen_urls.add(u)
+                top_results.append(r)
         blocks.append("\n".join(lines))
     if not blocks:
         return ""
     header = ("## Live web search (provider: %s, fetched %s)\n"
               "Use these results as leads; verify claims against the cited "
               "pages before repeating them." % (client.provider, _now_iso()))
-    return header + "\n\n" + "\n\n".join(blocks)
+    body = header + "\n\n" + "\n\n".join(blocks)
+    fetched = []
+    for r in top_results[:fetch_top_n]:
+        try:
+            text = client.fetch_text(r["url"], max_chars=fetch_max_chars)
+        except Exception as exc:  # noqa: BLE001 - a dead page must not kill a run
+            audit_fn({"event": "web_fetch_error", "url": r["url"],
+                      "error": str(exc)})
+            continue
+        audit_fn({"event": "web_fetch", "url": r["url"],
+                  "title": r.get("title") or "", "chars": len(text)})
+        fetched.append("### %s\n%s\n\n%s"
+                       % (r.get("title") or r["url"], r["url"], text))
+    if fetched:
+        body += ("\n\n## Pages read directly (fetched live just now; prefer "
+                 "these over search snippets when they conflict)\n\n"
+                 + "\n\n".join(fetched))
+    return body

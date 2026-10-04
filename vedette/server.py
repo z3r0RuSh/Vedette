@@ -375,7 +375,8 @@ def create_app(cfg=None):
             auth.verify_local_password(
                 password, password_env=auth.local_cfg(cfg)["password_env"])
         except auth.AuthError:
-            time.sleep(1)  # slow down password guessing
+            await asyncio.sleep(1)  # slow down password guessing without
+            # blocking the event loop for everyone else
             log.warning("local login failed: incorrect password")
             return HTMLResponse(
                 "<h1>Sign-in failed</h1><p>Incorrect password.</p>"
@@ -506,6 +507,7 @@ def create_app(cfg=None):
             return JSONResponse(
                 {"error": "unknown profile %r" % body.get("profile")},
                 status_code=400)
+        no_cache = bool(body.get("no_cache"))
 
         run_cfg = copy.deepcopy(cfg)
         if provider:
@@ -579,7 +581,7 @@ def create_app(cfg=None):
             try:
                 results, _ = orchestrator.assess_many(
                     run_cfg, targets, run_dir, progress_cb=_progress,
-                    profile=profile)
+                    profile=profile, no_cache=no_cache)
                 final = "done"
                 err = ""
             except _RunStopped:

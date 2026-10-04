@@ -47,6 +47,8 @@ table.models th { color: var(--muted); font-size: .76rem; letter-spacing: .08em;
 @media (max-width:760px) { .pull-form { flex-direction: column; align-items: stretch; } }
 @media (max-width: 520px) { .theme-panel { right: -85px; }.theme-save { grid-template-columns: 1fr 1fr; }.theme-save input { grid-column: 1 / -1; } }
 .btn.danger { border-color: var(--red); color: var(--red); }
+label.check { display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--muted); cursor: pointer; }
+label.check input[type=checkbox] { width: auto; margin: 0; accent-color: var(--blue); }
 .btn.danger:hover { border-color: var(--red); background: color-mix(in srgb, var(--red) 14%, transparent); transform: translateY(-1px); }
 .badge.stopped { background: #4a4436; color: #d8c58a; }
 .badge.interrupted { background: #4a4436; color: #d8c58a; }

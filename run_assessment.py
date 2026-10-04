@@ -102,6 +102,9 @@ def main():
     ap.add_argument("--model", default=None, help="Override research backend model id")
     ap.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     ap.add_argument("--out", default="runs", help="Output directory for reports")
+    ap.add_argument("--no-cache", action="store_true",
+                    help="Skip the axis-output cache: re-run every research leg "
+                         "fresh even if an identical run was cached")
     args = ap.parse_args()
 
     load_dotenv()  # temp runs: .env fills secrets 1Password would provide
@@ -133,7 +136,7 @@ def main():
     try:
         results, comparison = orchestrator.assess_many(
             cfg, targets, args.out, progress_cb=_progress,
-            profile=args.profile)
+            profile=args.profile, no_cache=args.no_cache)
     except ScopeError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(2)

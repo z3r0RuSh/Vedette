@@ -162,7 +162,8 @@ def test_assess_many_batch_two_types(monkeypatch, tmp_path):
                {"name": "nginx", "type": "software"}]
     results, comparison = orchestrator.assess_many(
         _cfg_no_search(), targets, str(tmp_path),
-        progress_cb=lambda p, d, target=None: events.append((p, target)))
+        progress_cb=lambda p, d, target=None: events.append((p, target)),
+        no_cache=True)
     assert len(results) == 2
     assert results[0]["type"] == "company"
     assert results[1]["type"] == "software"
@@ -192,7 +193,8 @@ def test_assess_many_batch_two_types(monkeypatch, tmp_path):
 def test_assess_many_single_target_no_comparison(monkeypatch, tmp_path):
     _patch_backends(monkeypatch)
     results, comparison = orchestrator.assess_many(
-        _cfg_no_search(), [{"name": "Acme", "type": "company"}], str(tmp_path))
+        _cfg_no_search(), [{"name": "Acme", "type": "company"}], str(tmp_path),
+        no_cache=True)
     assert len(results) == 1
     assert comparison is None
     assert not os.path.exists(os.path.join(str(tmp_path), "comparison.md"))
@@ -204,7 +206,7 @@ def test_assess_many_dedupes_same_name_dirs(monkeypatch, tmp_path):
         _cfg_no_search(),
         [{"name": "Acme", "type": "company"},
          {"name": "Acme", "type": "software"}],
-        str(tmp_path))
+        str(tmp_path), no_cache=True)
     assert results[0]["dir"] != results[1]["dir"]
     assert results[1]["dir"].endswith("-2")
 

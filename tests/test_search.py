@@ -192,6 +192,9 @@ class FakeClient:
                  "snippet": "S%d" % i, "fetched_at": "2026-01-01T00:00:00+00:00"}
                 for i in range(2)]
 
+    def fetch_text(self, url, max_chars=20000):
+        return "BODY of " + url
+
 
 def test_search_for_axis_audits_queries_urls_timestamps():
     records = []
@@ -200,8 +203,9 @@ def test_search_for_axis_audits_queries_urls_timestamps():
         "company", "incidents", "Acme", "https://acme.example",
         client, records.append)
     assert "Acme" in client.queries[0]
-    assert len(records) == 2  # one per query
-    rec = records[0]
+    searches = [r for r in records if r["event"] == "web_search"]
+    assert len(searches) == 2  # one per query
+    rec = searches[0]
     assert rec["event"] == "web_search"
     assert rec["provider"] == "duckduckgo"
     assert rec["query"] and rec["result_count"] == 2

@@ -496,6 +496,7 @@ document.getElementById("assess-form").onsubmit = async (e) => {
     profile: document.getElementById("f-profile").value || "security",
     research_provider: document.getElementById("f-provider").value || null,
     research_model: modelSel === "__custom__" ? (modelCustom || null) : (modelSel || null),
+    no_cache: document.getElementById("f-fresh").checked,
   };
   const r = await api("/api/runs", {
     method: "POST",

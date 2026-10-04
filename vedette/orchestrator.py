@@ -17,6 +17,7 @@ token counts, task names, and web-search queries/URLs -- never API key values.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -324,7 +325,7 @@ def _threat_tool_context(cfg, target, axis, out_dir):
         return ""
     if axis not in ("phishing", "infra", "tls"):
         return ""
-    domain = search_mod._domain_of(target.get("name") or "",
+    domain = search_mod.domain_of(target.get("name") or "",
                                    target.get("url") or "")
     if not domain:
         return ""
@@ -359,19 +360,84 @@ def _threat_tool_context(cfg, target, axis, out_dir):
 
 def run_axis(research_backend, axis, identity, out_dir, web_search,
              progress_cb=None, search_context="", target=None,
-             system_prompt=None):
-    _emit(progress_cb, "research",
-          "Researching: %s" % prompts.AXIS_TITLES[axis], target=target)
+             system_prompt=None, profile="security", cache_dir=None,
+             no_cache=False):
+    title = prompts.AXIS_TITLES[axis]
     prompt = prompts.build_axis_prompt(axis, identity)
     if search_context:
         prompt += "\n\n" + search_context
+    model_id = "%s/%s" % (research_backend.kind, research_backend.model)
+    sys_prompt = system_prompt or prompts.SYSTEM_RESEARCH
+    cache_key = None
+    if cache_dir and not no_cache:
+        cache_key = _axis_cache_key(slugify(target or axis), profile, axis,
+                                    model_id, sys_prompt, prompt)
+        hit = _cache_read(cache_dir, cache_key)
+        if hit is not None:
+            _emit(progress_cb, "research", "Researching: %s (cached)" % title,
+                  target=target)
+            append_audit(out_dir, {"event": "research_cache_hit",
+                                   "axis": axis, "key": cache_key})
+            return hit
+    _emit(progress_cb, "research", "Researching: %s" % title, target=target)
     result = research_backend.chat(
         [{"role": "user", "content": prompt}],
-        system=system_prompt or prompts.SYSTEM_RESEARCH,
+        system=sys_prompt,
         web_search=web_search,
     )
     _audit_call(out_dir, "research_" + axis, result, web_search=web_search)
+    if cache_key:
+        _cache_write(cache_dir, cache_key, result.text)
+        append_audit(out_dir, {"event": "research_cache_write",
+                               "axis": axis, "key": cache_key,
+                               "model": model_id})
     return result.text
+
+
+# -- Axis-output cache ---------------------------------------------------------
+# Re-running a target redoes every research leg from scratch. The cache stores
+# each axis result on disk keyed by (target, profile, axis, model,
+# system prompt, prompt), so a second run with the same inputs is ~10x
+# cheaper. The key hashes the full prompt (with volatile timestamps
+# normalized out), so prompt or context changes invalidate automatically.
+# Shared across runs in runs/.cache/.
+
+_CACHE_TS_RE = re.compile(r"fetched \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def _axis_cache_key(target_slug, profile, axis, model_id, system_prompt,
+                      prompt):
+    stable = _CACHE_TS_RE.sub("fetched <ts>", prompt)
+    h = hashlib.sha1()
+    for part in (target_slug, profile, axis, model_id, system_prompt, stable):
+        h.update(part.encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()[:16]
+
+
+def _cache_dir_for(base_out_dir):
+    """Shared cache dir: runs/.cache/ next to the run directories."""
+    return os.path.join(os.path.dirname(os.path.abspath(base_out_dir)),
+                         ".cache")
+
+
+def _cache_read(cache_dir, key):
+    path = os.path.join(cache_dir, key + ".md")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _cache_write(cache_dir, key, text):
+    try:
+        os.makedirs(cache_dir, exist_ok=True)
+        path = os.path.join(cache_dir, key + ".md")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+    except OSError:
+        pass  # cache is best-effort; a failed write must not kill a run
 
 
 def synthesize(synthesis_backend, identity, axis_texts, out_dir,
@@ -390,7 +456,8 @@ def synthesize(synthesis_backend, identity, axis_texts, out_dir,
     return result.text
 
 
-def assess_target(cfg, target, out_dir, progress_cb=None, profile="security"):
+def assess_target(cfg, target, out_dir, progress_cb=None, profile="security",
+                  cache_dir=None, no_cache=False):
     """Run the full pipeline for one target dict; returns a summary dict."""
     profile = check_profile(profile)
     target = normalize_target(target)
@@ -420,7 +487,8 @@ def assess_target(cfg, target, out_dir, progress_cb=None, profile="security"):
         axis_texts[axis] = run_axis(
             research_backend, axis, json.dumps(identity), out_dir, web_search,
             progress_cb, search_context=context, target=name,
-            system_prompt=system_prompt,
+            system_prompt=system_prompt, profile=profile,
+            cache_dir=cache_dir, no_cache=no_cache,
         )
     synthesis_text = synthesize(
         synthesis_backend, json.dumps(identity), axis_texts, out_dir,
@@ -512,19 +580,21 @@ def _unique_dir(base_out_dir, name, used):
 
 
 def assess_many(cfg, targets, base_out_dir, progress_cb=None,
-                profile="security"):
+                profile="security", no_cache=False):
     """Assess a list of targets (dicts or tuples); compare when > 1."""
     profile = check_profile(profile)
     targets = [normalize_target(t) for t in targets]
     if not targets:
         raise ConfigError("No targets given.")
     check_scope(targets)
+    cache_dir = _cache_dir_for(base_out_dir)
     results = []
     used_dirs = set()
     for target in targets:
         out_dir = _unique_dir(base_out_dir, target["name"], used_dirs)
         results.append(assess_target(cfg, target, out_dir, progress_cb,
-                                     profile=profile))
+                                     profile=profile, cache_dir=cache_dir,
+                                     no_cache=no_cache))
     comparison = None
     if len(results) > 1:
         comparison = compare_targets(cfg, results, base_out_dir, progress_cb)

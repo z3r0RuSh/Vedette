@@ -230,7 +230,7 @@ def test_assess_many_rejects_bad_profile(monkeypatch, tmp_path):
     with pytest.raises(orchestrator.ConfigError):
         orchestrator.assess_many(
             _cfg_no_search(), [{"name": "Acme", "type": "company"}],
-            str(tmp_path), profile="nope")
+            str(tmp_path), profile="nope", no_cache=True)
 
 
 def test_assess_many_corporate_profile_uses_osint_axes(monkeypatch, tmp_path):
@@ -238,7 +238,7 @@ def test_assess_many_corporate_profile_uses_osint_axes(monkeypatch, tmp_path):
     _patch_backends(monkeypatch, store)
     results, _ = orchestrator.assess_many(
         _cfg_no_search(), [{"name": "Acme", "type": "company"}],
-        str(tmp_path), profile="corporate")
+        str(tmp_path), profile="corporate", no_cache=True)
     assert len(results) == 1
     report = open(os.path.join(results[0]["dir"], "report.md"),
                   encoding="utf-8").read()
@@ -262,7 +262,7 @@ def test_assess_many_person_target(monkeypatch, tmp_path):
     _patch_backends(monkeypatch, store)
     results, _ = orchestrator.assess_many(
         _cfg_no_search(), [{"name": "Jane Doe", "type": "person"}],
-        str(tmp_path))
+        str(tmp_path), no_cache=True)
     assert len(results) == 1
     assert results[0]["type"] == "person"
     report = open(os.path.join(results[0]["dir"], "report.md"),
@@ -278,13 +278,37 @@ def test_assess_many_security_profile_unchanged(monkeypatch, tmp_path):
     _patch_backends(monkeypatch, store)
     results, _ = orchestrator.assess_many(
         _cfg_no_search(), [{"name": "Acme", "type": "company"}],
-        str(tmp_path))
+        str(tmp_path), no_cache=True)
     report = open(os.path.join(results[0]["dir"], "report.md"),
                   encoding="utf-8").read()
     assert "Jurisdiction, legal exposure" in report
     assert "Ownership & corporate structure" not in report
     assert any("## Verdict" in c for _, c in store)
     assert any(s == prompts.SYSTEM_RESEARCH for s, c in store)
+
+
+def test_axis_cache_second_run_skips_research_backend(monkeypatch, tmp_path):
+    """An identical second run serves research legs from the on-disk cache."""
+    target = [{"name": "AcmeCache", "type": "company"}]
+    store = []
+    _patch_backends(monkeypatch, store)
+    orchestrator.assess_many(_cfg_no_search(), target, str(tmp_path))
+    first_research = [s for s, _ in store if s == prompts.SYSTEM_RESEARCH]
+    assert first_research  # first run actually researched
+    # Second run, fresh store: research legs come from runs/.cache/, so the
+    # backend sees no research calls (identity + synthesis still run live).
+    store2 = []
+    _patch_backends(monkeypatch, store2)
+    results, _ = orchestrator.assess_many(
+        _cfg_no_search(), target, str(tmp_path))
+    assert not [s for s, _ in store2 if s == prompts.SYSTEM_RESEARCH]
+    assert os.path.exists(os.path.join(results[0]["dir"], "report.md"))
+    # ...while no_cache=True forces a full fresh run.
+    store3 = []
+    _patch_backends(monkeypatch, store3)
+    orchestrator.assess_many(_cfg_no_search(), target, str(tmp_path),
+                             no_cache=True)
+    assert [s for s, _ in store3 if s == prompts.SYSTEM_RESEARCH]
 
 
 def test_compare_person_title(tmp_path):

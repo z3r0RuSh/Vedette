@@ -16,9 +16,14 @@ trail -- only backend kind, model id, and token counts are recorded.
 
 from __future__ import annotations
 
+import logging
 import os
+import random
+import time
 
 import requests
+
+log = logging.getLogger(__name__)
 
 VALID_PROVIDERS = ("ollama", "openai", "anthropic")
 
@@ -74,10 +79,44 @@ def _require_env(name):
     return value
 
 
-def _post_json(url, payload, headers=None, timeout=600):
-    resp = requests.post(url, json=payload, headers=headers or {}, timeout=timeout)
-    resp.raise_for_status()
-    return resp.json()
+# HTTP statuses worth retrying: rate limits and server-side failures.
+_RETRYABLE_STATUS = frozenset([429, 500, 502, 503, 504])
+
+
+class _RetryableError(Exception):
+    """A failed model call that is worth retrying (raised internally)."""
+
+
+def _post_json(url, payload, headers=None, timeout=600, retries=4):
+    """POST JSON with exponential-backoff retry on transient failures.
+
+    Retries timeouts, connection errors, HTTP 429/5xx, and empty response
+    bodies. Other 4xx errors fail fast. Each retry is logged server-side so
+    a flaky run stays diagnosable instead of mysterious.
+    """
+    last_exc = None
+    for attempt in range(1, retries + 1):
+        try:
+            resp = requests.post(url, json=payload, headers=headers or {},
+                                 timeout=timeout)
+            if resp.status_code in _RETRYABLE_STATUS:
+                raise _RetryableError("HTTP %d" % resp.status_code)
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except ValueError:
+                raise _RetryableError("empty/unparseable response body")
+        except _RetryableError as exc:
+            last_exc = exc
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_exc = exc
+        if attempt < retries:
+            delay = min(60.0, 2.0 ** (attempt - 1)) + random.uniform(0, 1.0)
+            log.warning("model call attempt %d/%d failed (%s); "
+                        "retrying in %.1fs", attempt, retries, last_exc,
+                        delay)
+            time.sleep(delay)
+    raise last_exc
 
 
 class Backend:

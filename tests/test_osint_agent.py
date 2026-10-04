@@ -125,11 +125,13 @@ def test_make_backend_unknown_provider():
 # ---------------------------------------------------------------------------
 
 class FakeResp:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
-        pass
+        if self.status_code >= 400:
+            raise RuntimeError("HTTP %d" % self.status_code)
 
     def json(self):
         return self._payload

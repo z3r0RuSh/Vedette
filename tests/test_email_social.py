@@ -473,7 +473,7 @@ def test_assess_many_email_target_no_tools(monkeypatch, tmp_path):
     _patch_backends(monkeypatch, store)
     results, _ = orchestrator.assess_many(
         _cfg_no_tools(), [{"name": "jane@example.com", "type": "email"}],
-        str(tmp_path))
+        str(tmp_path), no_cache=True)
     assert len(results) == 1
     assert results[0]["type"] == "email"
     report = open(os.path.join(results[0]["dir"], "report.md"),
