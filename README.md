@@ -1,5 +1,7 @@
 # Vedette
 
+<video src="docs/assets/vedette-launch.mp4" width="100%" controls></video>
+
 Standalone agent: give it targets -- companies, software, domains -- and it
 runs a structured OSINT security playbook, then produces source-linked
 assessment briefs (and a ranked comparison when given multiple targets).
@@ -12,8 +14,6 @@ so name-search works with every model backend, including local Ollama. A web
 GUI mirrors the CLI: multi-target form, per-target live progress, rendered
 briefs, run history -- behind Google OAuth (email allowlist) or OIDC SSO. No
 anonymous access.
-
-<video src="docs/assets/vedette-launch.mp4" width="100%" controls></video>
 
 ## Target types and research axes
 
