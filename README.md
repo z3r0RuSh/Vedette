@@ -13,6 +13,8 @@ GUI mirrors the CLI: multi-target form, per-target live progress, rendered
 briefs, run history -- behind Google OAuth (email allowlist) or OIDC SSO. No
 anonymous access.
 
+<video src="docs/assets/vedette-launch.mp4" width="100%" controls></video>
+
 ## Target types and research axes
 
 | Type | Axes |
