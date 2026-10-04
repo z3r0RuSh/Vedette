@@ -9,9 +9,10 @@ research_backend:
   # api_key_env: null         # env var holding the key (default OPENAI_API_KEY / ANTHROPIC_API_KEY)
 
 # Triage + synthesis: local-capable model (keeps synthesis on-machine).
+# Must be already downloaded in Ollama (see http://localhost:11434/api/tags).
 synthesis_backend:
   provider: ollama
-  model: null
+  model: qwen3:32b
 
 ollama_url: http://localhost:11434
 

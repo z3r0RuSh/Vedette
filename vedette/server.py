@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import os
+import requests
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -60,6 +62,29 @@ def log_secret_presence():
     """Log which secrets are set. Names only -- values are never printed."""
     for name in TRACKED_SECRETS:
         log.info("secret %s: %s", name, "set" if os.environ.get(name) else "not set")
+
+
+def _ollama_models(cfg):
+    """(available, url, [{name, size_gb}], error) for the local Ollama server.
+
+    Returns available=False with an empty list when Ollama is unreachable;
+    error carries the (non-sensitive) failure reason for the GUI hint.
+    """
+    url = (cfg.get("ollama_url") or "http://localhost:11434").rstrip("/")
+    try:
+        resp = requests.get(url + "/api/tags", timeout=5)
+        resp.raise_for_status()
+        models = resp.json().get("models") or []
+    except Exception as exc:  # noqa: BLE001 - unreachable Ollama is normal
+        log.warning("ollama /api/tags failed (%s): %s", url, exc)
+        return False, url, [], str(exc)
+    out = []
+    for m in models:
+        name = m.get("name")
+        if name:
+            out.append({"name": name,
+                        "size_gb": round((m.get("size") or 0) / 1e9, 1)})
+    return True, url, out, ""
 
 
 def _runs_dir(cfg):
@@ -147,6 +172,10 @@ def parse_gui_targets(body):
     return targets
 
 
+class _RunStopped(Exception):
+    """Raised inside the worker thread when the operator stops a run."""
+
+
 def create_app(cfg=None):
     cfg = cfg or {}
     app = FastAPI(title="Vedette", docs_url=None, redoc_url=None,
@@ -154,6 +183,8 @@ def create_app(cfg=None):
 
     runs = {}
     runs_lock = threading.Lock()
+    stop_events = {}  # run_id -> threading.Event; set by POST /stop
+    run_threads = {}  # run_id -> threading.Thread; liveness checks for stop/delete
     activity = from_environment()
     if activity.enabled:
         try:
@@ -242,6 +273,7 @@ def create_app(cfg=None):
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
             "<title>Vedette - Sign in</title>"
+            "<link rel='icon' type='image/svg+xml' href='/ui/favicon.svg'>"
             "<link rel='stylesheet' href='/ui/styles.css'></head>"
             "<body><main class='login'><h1>Vedette</h1>"
             "<p>Sign in with an approved account to continue.</p>"
@@ -362,6 +394,64 @@ def create_app(cfg=None):
         user = request.state.user
         return {"email": user["email"], "name": user.get("name", "")}
 
+    @app.get("/api/ollama/models")
+    def ollama_models():
+        """Models already downloaded on the local Ollama server.
+
+        Powers the model picker in the new-assessment form. Returns an
+        empty list (not an error) when Ollama is unreachable so the GUI
+        keeps working and the field stays freeform.
+        """
+        available, url, models, error = _ollama_models(cfg)
+        return {"available": available, "url": url, "models": models,
+                "error": error}
+
+    @app.get("/api/config")
+    def api_config():
+        """Safe config summary for the Admin page. Names only, no secrets."""
+        rb = cfg.get("research_backend") or {}
+        sb = cfg.get("synthesis_backend") or {}
+        g = auth.google_cfg(cfg)
+        o = auth.oidc_cfg(cfg)
+        return {
+            "research_backend": {
+                "provider": rb.get("provider") or "anthropic",
+                "model": rb.get("model") or None,
+            },
+            "synthesis_backend": {
+                "provider": sb.get("provider") or "ollama",
+                "model": sb.get("model") or None,
+            },
+            "ollama_url": cfg.get("ollama_url") or "http://localhost:11434",
+            "auth": {
+                "google": bool(g["enabled"]),
+                "oidc": bool(o["enabled"]),
+                "local": bool(auth.local_auth_active(cfg)),
+            },
+        }
+
+    @app.post("/api/ollama/pull")
+    async def ollama_pull(request: Request):
+        """Start downloading a model in the background. Returns immediately."""
+        body = await request.json()
+        name = ((body or {}).get("name") or "").strip()
+        if not name:
+            return JSONResponse({"error": "model name required"}, status_code=400)
+        url = (cfg.get("ollama_url") or "http://localhost:11434").rstrip("/")
+
+        def _pull():
+            try:
+                r = requests.post(url + "/api/pull", json={"model": name},
+                                  timeout=7200, stream=True)
+                for _chunk in r.iter_lines():
+                    pass
+                log.info("ollama pull finished: %s -> %s", name, r.status_code)
+            except Exception as exc:  # noqa: BLE001 - logged, not raised
+                log.warning("ollama pull failed for %s: %s", name, exc)
+
+        threading.Thread(target=_pull, daemon=True, name="ollama-pull").start()
+        return {"started": True, "model": name}
+
     @app.get("/api/activity")
     def activity_feed(limit: int = 100):
         if not activity.enabled:
@@ -431,6 +521,19 @@ def create_app(cfg=None):
         except orchestrator.models.ConfigError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
 
+        # Fail fast if the requested Ollama model isn't downloaded — else
+        # the run dies mid-research with a bare 404 from /api/chat.
+        if run_cfg["research_backend"]["provider"] == "ollama":
+            want = (run_cfg["research_backend"].get("model")
+                    or orchestrator.models.DEFAULT_MODELS["ollama"])
+            avail, _url, have, _err = _ollama_models(cfg)
+            if avail and want not in {m["name"] for m in have}:
+                return JSONResponse(
+                    {"error": "ollama model '%s' is not downloaded — pick a "
+                              "downloaded model or pull it (Admin > Ollama "
+                              "models)" % want},
+                    status_code=400)
+
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         first = targets[0]
         run_id = "run-%s-%s" % (stamp, orchestrator.slugify(first["name"]))
@@ -451,7 +554,13 @@ def create_app(cfg=None):
             "assessment.started", run_id, 202,
             {"targets": [t["name"] for t in targets], "profile": profile})
 
+        stop_event = threading.Event()
+        with runs_lock:
+            stop_events[run_id] = stop_event
+
         def _progress(phase, detail, target=None):
+            if stop_event.is_set():
+                raise _RunStopped()
             with runs_lock:
                 if run_id in runs:
                     runs[run_id]["phase"] = phase
@@ -473,26 +582,45 @@ def create_app(cfg=None):
                     profile=profile)
                 final = "done"
                 err = ""
+            except _RunStopped:
+                log.info("run %s stopped by operator", run_id)
+                final = "stopped"
+                err = "Stopped by operator."
+                results = []
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI
                 log.exception("run %s failed", run_id)
                 final = "failed"
                 err = str(exc)
                 results = []
             with runs_lock:
-                runs[run_id]["status"] = final
-                runs[run_id]["error"] = err
-            activity.record("system", "assessment." + final, run_id,
-                            200 if final == "done" else 500,
-                            {"target_count": len(targets)})
-            meta = _read_run_meta(run_dir) or {}
-            meta.update({"id": run_id, "org": display, "url": first["url"],
-                         "status": final, "created": created, "error": err,
-                         "orgs": [r["name"] for r in results],
-                         "targets": [{"name": r["name"], "type": r["type"],
-                                      "dir": os.path.basename(r["dir"])}
-                                     for r in results] or meta.get("targets")})
-            with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as fh:
-                json.dump(meta, fh)
+                if run_id in runs:
+                    runs[run_id]["status"] = final
+                    runs[run_id]["error"] = err
+            # Bookkeeping must not be able to wedge the run in "running":
+            # a failure here used to skip the run.json write and leak the
+            # stop event, leaving a ghost run behind.
+            try:
+                activity.record("system", "assessment." + final, run_id,
+                                200 if final in ("done", "stopped") else 500,
+                                {"target_count": len(targets)})
+            except Exception:
+                log.exception("run %s: activity record failed", run_id)
+            try:
+                meta = _read_run_meta(run_dir) or {}
+                meta.update({"id": run_id, "org": display, "url": first["url"],
+                             "status": final, "created": created, "error": err,
+                             "orgs": [r["name"] for r in results],
+                             "targets": [{"name": r["name"], "type": r["type"],
+                                          "dir": os.path.basename(r["dir"])}
+                                         for r in results] or meta.get("targets")})
+                with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as fh:
+                    json.dump(meta, fh)
+            except Exception:
+                log.exception("run %s: could not write run.json", run_id)
+            finally:
+                with runs_lock:
+                    stop_events.pop(run_id, None)
+                    run_threads.pop(run_id, None)
 
         with runs_lock:
             runs[run_id] = {"org": display, "status": "running",
@@ -501,7 +629,10 @@ def create_app(cfg=None):
                             "targets": {t["name"]: {"phase": "queued",
                                                    "detail": ""}
                                         for t in targets}}
-        threading.Thread(target=_worker, daemon=True).start()
+        worker = threading.Thread(target=_worker, daemon=True)
+        with runs_lock:
+            run_threads[run_id] = worker
+        worker.start()
         return {"id": run_id, "status": "running"}
 
     @app.get("/api/runs/{run_id}")
@@ -546,6 +677,129 @@ def create_app(cfg=None):
             return JSONResponse({"error": "report not ready"}, status_code=404)
         return {"reports": reports, "comparison": comparison}
 
+    @app.post("/api/runs/{run_id}/stop")
+    def stop_run(run_id: str):
+        """Ask a running assessment to stop between research legs.
+
+        The worker notices the flag on its next progress update, so a stop
+        lands between legs rather than mid-request. Not instant, but safe.
+        """
+        with runs_lock:
+            r = runs.get(run_id)
+            ev = stop_events.get(run_id)
+            thread = run_threads.get(run_id)
+        if not r:
+            meta = _read_run_meta(os.path.join(_runs_dir(cfg), run_id))
+            if not meta:
+                return JSONResponse({"error": "unknown run"},
+                                    status_code=404)
+            if meta.get("status") == "running":
+                # Stale "running" with no live worker (the server was
+                # restarted mid-run): heal it instead of just erroring, so
+                # the UI updates and the run can be deleted.
+                _mark_interrupted(run_id, "Stop requested for a run with "
+                                          "no live worker.")
+                return {"ok": True, "id": run_id, "healed": True}
+            return JSONResponse({"error": "run is not active"},
+                                status_code=400)
+        if r["status"] != "running":
+            return JSONResponse({"error": "run is not active"},
+                                status_code=400)
+        if thread is not None and not thread.is_alive():
+            # The worker died without recording a final status; heal it.
+            with runs_lock:
+                runs.pop(run_id, None)
+                stop_events.pop(run_id, None)
+                run_threads.pop(run_id, None)
+            _mark_interrupted(run_id, "Worker thread died without "
+                                      "recording a final status.")
+            return {"ok": True, "id": run_id, "healed": True}
+        if ev is not None:
+            ev.set()
+        return {"ok": True, "id": run_id}
+
+    @app.delete("/api/runs/{run_id}")
+    def delete_run(run_id: str):
+        """Permanently delete a finished run and its reports/artifacts."""
+        if "/" in run_id or "\\" in run_id or ".." in run_id:
+            return JSONResponse({"error": "unknown run"}, status_code=404)
+        with runs_lock:
+            r = runs.get(run_id)
+            thread = run_threads.get(run_id)
+        # Refuse only when a worker thread is actually alive. A stale
+        # "running" status with a dead/missing thread is healed so the
+        # delete can proceed.
+        live = bool(r and r["status"] == "running"
+                    and (thread is None or thread.is_alive()))
+        if live:
+            return JSONResponse({"error": "stop the run before deleting it"},
+                                status_code=400)
+        if r and r["status"] == "running":
+            with runs_lock:
+                runs.pop(run_id, None)
+                stop_events.pop(run_id, None)
+                run_threads.pop(run_id, None)
+        run_dir = os.path.join(_runs_dir(cfg), run_id)
+        if not os.path.isdir(run_dir) and not r:
+            return JSONResponse({"error": "unknown run"}, status_code=404)
+        # rmtree used to run with ignore_errors=True, which silently
+        # reported success when the files could not be removed (permissions,
+        # locks) -- the GUI then kept listing the run with no explanation.
+        # Collect the errors and verify instead.
+        rm_errors = []
+
+        def _on_rm_error(func, path, exc_info):
+            rm_errors.append("%s: %s" % (path, exc_info[1]))
+
+        if os.path.isdir(run_dir):
+            shutil.rmtree(run_dir, onerror=_on_rm_error)
+        if os.path.exists(run_dir):
+            detail = "; ".join(rm_errors) or "unknown error"
+            log.error("run %s: delete failed: %s", run_id, detail)
+            return JSONResponse({"error": "could not delete run files: " + detail},
+                                status_code=500)
+        with runs_lock:
+            runs.pop(run_id, None)
+            stop_events.pop(run_id, None)
+            run_threads.pop(run_id, None)
+        return {"ok": True, "id": run_id}
+
+    def _mark_interrupted(run_id, error):
+        """Flip a stale 'running' run.json to 'interrupted'.
+
+        Used when no worker thread is alive for the run (server restarted
+        mid-run, or the thread died without recording a final status).
+        Returns True when a stale status was healed.
+        """
+        run_dir = os.path.join(_runs_dir(cfg), run_id)
+        meta = _read_run_meta(run_dir)
+        if not meta or meta.get("status") != "running":
+            return False
+        meta["status"] = "interrupted"
+        meta["error"] = error
+        try:
+            with open(os.path.join(run_dir, "run.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(meta, fh)
+        except Exception:
+            log.exception("run %s: could not mark interrupted", run_id)
+            return False
+        log.info("run %s marked interrupted: %s", run_id, error)
+        return True
+
+    # -- startup reconciliation -------------------------------------------
+    # A previous process may have died (restart, crash, Ctrl-C) mid-run.
+    # Those run.json files still say "running" but no worker thread exists,
+    # which makes stop/delete misbehave on them. Heal them at startup so
+    # the UI tells the truth and the runs can be deleted.
+    try:
+        for entry in sorted(os.listdir(_runs_dir(cfg))):
+            _mark_interrupted(entry, "Server restarted while this run was "
+                                     "in flight; no worker was alive to "
+                                     "finish it.")
+    except Exception:
+        log.exception("startup run reconciliation failed")
+
     return app
 
 
@@ -571,8 +825,22 @@ def main():
     log.info("google login: %s", "enabled" if g["enabled"] else "disabled")
     log.info("oidc login: %s", "enabled" if o["enabled"] else "disabled")
     if auth.local_auth_active(cfg):
-        log.warning("local password failover is ACTIVE "
-                    "(no OAuth/OIDC configured); set up SSO to disable it")
+        if g["enabled"] or o["enabled"]:
+            log.warning("local password login is ACTIVE alongside SSO "
+                        "(auth.local.allow_with_provider)")
+        else:
+            log.warning("local password failover is ACTIVE "
+                        "(no OAuth/OIDC configured); set up SSO to disable it")
+    # Warn early if the synthesis (triage) Ollama model isn't downloaded —
+    # otherwise every run fails at triage with a bare 404 from /api/chat.
+    synth_cfg = cfg.get("synthesis_backend") or {}
+    if synth_cfg.get("provider", "ollama") == "ollama":
+        want = (synth_cfg.get("model")
+                or orchestrator.models.DEFAULT_MODELS["ollama"])
+        avail, _url, have, _err = _ollama_models(cfg)
+        if avail and want not in {m["name"] for m in have}:
+            log.warning("synthesis ollama model '%s' is not downloaded "
+                        "(see Admin > Ollama models)", want)
     elif not g["enabled"] and not o["enabled"]:
         log.warning("no login provider configured; sign-in will be unavailable "
                     "(set OSINT_LOCAL_PASSWORD for local failover)")

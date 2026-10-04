@@ -312,7 +312,7 @@ async function handlePullSubmit(e) {
 const _pullForm = document.getElementById("pull-form");
 if (_pullForm) _pullForm.onsubmit = handlePullSubmit;
 
-const TERMINAL_STATUSES = ["done", "failed", "stopped"];
+const TERMINAL_STATUSES = ["done", "failed", "stopped", "interrupted"];
 
 function renderRunList(el, runs, emptyText, action) {
   if (!runs.length) { el.innerHTML = '<p class="muted">' + emptyText + "</p>"; return; }
@@ -565,8 +565,9 @@ async function showRun(runId) {
     } else {
       prog.classList.add("hidden");
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-      if (st.status === "failed") {
-        document.getElementById("detail-error").textContent = "Run failed: " + (st.error || "");
+      if (st.status === "failed" || st.status === "interrupted") {
+        document.getElementById("detail-error").textContent =
+          (st.status === "interrupted" ? "Run interrupted: " : "Run failed: ") + (st.error || "");
       } else if (st.status === "stopped") {
         document.getElementById("detail-error").textContent = "Run stopped by operator — no report was generated.";
       } else {
