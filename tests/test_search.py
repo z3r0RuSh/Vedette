@@ -234,13 +234,14 @@ def test_search_for_axis_domain_queries_use_domain():
 
 
 def test_axis_queries_cover_all_axes():
-    for t in ("company", "software", "domain"):
-        from vedette import prompts
-        for axis in prompts.axes_for_type(t):
-            qs = search_mod.AXIS_QUERIES[t][axis]
-            assert len(qs) >= 1
-            for q in qs:
-                q.format(name="N", domain="d.example")  # templates are valid
+    from vedette import prompts
+    for p in prompts.PROFILES:
+        for t in prompts.TARGET_TYPES:
+            for axis in prompts.axes_for_type(t, p):
+                qs = search_mod.AXIS_QUERIES[t][axis]
+                assert len(qs) >= 1
+                for q in qs:
+                    q.format(name="N", domain="d.example")  # templates are valid
 
 
 # ---------------------------------------------------------------------------

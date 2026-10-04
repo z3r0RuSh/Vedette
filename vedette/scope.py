@@ -1,14 +1,15 @@
-"""Out-of-scope guard: this agent only does OSINT security research.
+"""Out-of-scope guard: this agent does OSINT research on legitimate targets.
 
-Target types are company, software, and domain -- all assessed on security
-axes. Anything else (general trivia, entertainment, how-tos, ...) is refused
-with a short message, not a lecture.
+Target types are company, software, domain, person, and email -- researched
+under the security profile or the OSINT collection profiles (corporate,
+financial, reputation, technology). Anything else (general trivia,
+entertainment, how-tos, ...) is refused with a short message, not a lecture.
 """
 
 from __future__ import annotations
 
-REFUSAL = ("Out of scope: this tool only performs OSINT security assessments "
-           "(companies, software, domains).")
+REFUSAL = ("Out of scope: this tool only performs OSINT research "
+           "(companies, software, domains, people, emails).")
 
 
 class ScopeError(Exception):

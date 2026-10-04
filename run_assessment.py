@@ -1,19 +1,27 @@
 #!/usr/bin/env python3
 """CLI for the OSINT assessment agent.
 
-Target types: company (default), software, domain. Pass targets repeatably;
-each is assessed on its type's security axes, and multiple targets get a
-ranked comparison.
+Target types: company (default), software, domain, person. Pass targets
+repeatably; each is assessed on its type's axes under the chosen collection
+profile, and multiple targets get a ranked comparison.
 
 Examples:
   python run_assessment.py --target "GreenNode" --target "FPT Smart Cloud"
   python run_assessment.py --target "nginx|software" --target "openssl|software"
   python run_assessment.py --target "example.com|domain"
   python run_assessment.py --target "Acme=https://acme.com" --type company
+  python run_assessment.py --target "Acme" --profile corporate
+  python run_assessment.py --target "Jane Doe|person" --profile full
   # back-compat:
   python run_assessment.py --org GreenNode --url https://greennode.ai
   python run_assessment.py --org GreenNode --url https://greennode.ai \\
       --compare "CoreWeave=https://coreweave.com,Nebius=https://nebius.com"
+
+Collection profiles (--profile): security (default, the security assessment
+playbook), corporate, financial, reputation, technology, full. The OSINT
+profiles swap the company axes for intelligence-collection requirements and
+write the brief in intelligence style (key judgments with analytic confidence
++ collection gaps). Target types: company, software, domain, person.
 """
 
 import argparse
@@ -26,12 +34,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from vedette import orchestrator
 from vedette.dotenv import load_dotenv
-from vedette.prompts import TARGET_TYPES
+from vedette.prompts import PROFILES, TARGET_TYPES
 from vedette.scope import ScopeError
 from vedette.server import log_secret_presence
 
 URL_LIKE_RE = re.compile(r"^(https?://)?[a-z0-9]([a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}(/.*)?$",
                          re.IGNORECASE)
+EMAIL_LIKE_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 
 def parse_target(spec, default_type="company"):
@@ -58,7 +67,10 @@ def parse_target(spec, default_type="company"):
     if "=" in spec and not spec.startswith("http"):
         name, url = spec.split("=", 1)
         name, url = name.strip(), url.strip()
-    if type_ == (default_type or "company").lower() and URL_LIKE_RE.match(name):
+    if type_ == (default_type or "company").lower() and EMAIL_LIKE_RE.match(name):
+        # Bare email address with no explicit type -> email target.
+        type_ = "email"
+    elif type_ == (default_type or "company").lower() and URL_LIKE_RE.match(name):
         # Bare URL/domain with no explicit type -> treat as a domain target.
         type_ = "domain"
         if "://" not in name:
@@ -76,6 +88,9 @@ def main():
                          "'https://example.com|domain'")
     ap.add_argument("--type", default="company", choices=list(TARGET_TYPES),
                     help="Default target type for --target/--org/--compare")
+    ap.add_argument("--profile", default="security", choices=list(PROFILES),
+                    help="Collection profile: security (default), corporate, "
+                         "financial, reputation, technology, full")
     ap.add_argument("--org", default=None,
                     help="Organization name (back-compat alias for --target)")
     ap.add_argument("--url", default="", help="Organization URL (back-compat)")
@@ -117,7 +132,8 @@ def main():
 
     try:
         results, comparison = orchestrator.assess_many(
-            cfg, targets, args.out, progress_cb=_progress)
+            cfg, targets, args.out, progress_cb=_progress,
+            profile=args.profile)
     except ScopeError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(2)

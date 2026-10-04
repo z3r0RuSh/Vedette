@@ -46,11 +46,13 @@ def _now_iso():
 
 
 def _domain_of(name, url):
-    """Best-effort domain for query templating, from the URL or name."""
+    """Best-effort domain for query templating, from the URL, name, or email."""
     for raw in (url or "", name or ""):
         raw = raw.strip()
         if not raw:
             continue
+        if "@" in raw and "://" not in raw:
+            raw = raw.rsplit("@", 1)[1]  # email address -> domain part
         if "://" not in raw and re.match(r"^[a-z0-9.-]+\.[a-z]{2,}$", raw, re.I):
             return raw.lower()
         try:
@@ -86,6 +88,82 @@ AXIS_QUERIES = {
         "posture": [
             "{name} bug bounty vulnerability disclosure program",
             "{name} security whitepaper penetration testing policy",
+        ],
+        # ---- corporate profile ----
+        "ownership": [
+            "{name} parent company ownership subsidiaries",
+            "{name} incorporation corporate structure",
+        ],
+        "leadership": [
+            "{name} CEO executive team leadership",
+            "{name} board of directors",
+        ],
+        "financials": [
+            "{name} annual revenue headcount",
+            "{name} financial results earnings",
+        ],
+        "footprint": [
+            "{name} headquarters office locations",
+            "{name} data center locations regions",
+        ],
+        "partnerships": [
+            "{name} customers partners announced",
+            "{name} strategic partnership alliance",
+        ],
+        # ---- financial profile ----
+        "funding": [
+            "{name} funding rounds total raised",
+            "{name} Series A B C funding announced",
+        ],
+        "investors": [
+            "{name} investors venture capital backers",
+            "{name} lead investor funding round",
+        ],
+        "revenue": [
+            "{name} revenue 2024 2025 reported estimated",
+            "{name} annual recurring revenue ARR",
+        ],
+        "manda": [
+            "{name} acquisitions acquired",
+            "{name} merger acquisition rumors",
+        ],
+        "valuation": [
+            "{name} valuation funding round",
+            "{name} market capitalization",
+        ],
+        # ---- reputation profile ----
+        "coverage": [
+            "{name} news coverage",
+            "{name} press announcement 2025 2026",
+        ],
+        "controversies": [
+            "{name} controversy scandal",
+            "{name} lawsuit filed",
+        ],
+        "regulatory": [
+            "{name} regulatory fine enforcement action",
+            "{name} investigation regulator",
+        ],
+        "sentiment": [
+            "{name} employee reviews rating",
+            "{name} customer reviews complaints",
+        ],
+        # ---- technology profile ----
+        "techstack": [
+            "{name} engineering blog technology stack",
+            "{name} tech stack built with",
+        ],
+        "engineering": [
+            "{name} engineering jobs hiring",
+            "{name} engineering team blog",
+        ],
+        "patents": [
+            "{name} patents filed",
+            "{name} research publications R&D",
+        ],
+        "opensource": [
+            "{name} github open source",
+            "{name} open source projects maintained",
         ],
     },
     "software": {
@@ -130,6 +208,49 @@ AXIS_QUERIES = {
         "infra": [
             "'{domain}' subdomains DNS records",
             "'{domain}' MX records mail infrastructure",
+        ],
+    },
+    "person": {
+        "p_background": [
+            "{name} biography education",
+            "{name} early life background",
+        ],
+        "p_career": [
+            "{name} career history roles",
+            "{name} appointed CEO executive",
+        ],
+        "p_affiliations": [
+            "{name} board member advisor",
+            "{name} founded co-founded organization",
+        ],
+        "p_presence": [
+            "{name} interview talk",
+            "{name} social media official profile",
+        ],
+        "p_controversies": [
+            "{name} controversy allegations",
+            "{name} lawsuit legal",
+        ],
+        "p_social": [
+            "{name} linkedin twitter github",
+            '"{name}" social media profile',
+        ],
+    },
+    "email": {
+        "e_format": [
+            '"{name}" email',
+        ],
+        "e_deliverability": [
+            '"{domain}" MX records mail server',
+            '"{domain}" SPF DKIM DMARC',
+        ],
+        "e_breaches": [
+            '"{name}" breach',
+            '"{name}" leaked pastebin',
+        ],
+        "e_associations": [
+            '"{name}"',
+            '"{name}" forum github',
         ],
     },
 }

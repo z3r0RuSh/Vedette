@@ -204,3 +204,47 @@ def test_verify_local_password_rejects_when_unset(monkeypatch):
     monkeypatch.delenv("OSINT_LOCAL_PASSWORD", raising=False)
     with pytest.raises(auth.AuthError):
         auth.verify_local_password("anything")
+
+
+# ---------------------------------------------------------------------------
+# Local login alongside a configured provider (opt-in for tester access)
+# ---------------------------------------------------------------------------
+
+def test_local_active_with_google_when_allow_with_provider(monkeypatch):
+    monkeypatch.setenv("OSINT_LOCAL_PASSWORD", "s3cret")
+    monkeypatch.setenv("OSINT_GOOGLE_CLIENT_ID", "some-client-id")
+    cfg = _bare_cfg()
+    cfg["auth"]["local"] = {"enabled": True, "allow_with_provider": True}
+    assert auth.local_auth_active(cfg)
+
+
+def test_local_active_with_oidc_when_allow_with_provider(monkeypatch):
+    monkeypatch.setenv("OSINT_LOCAL_PASSWORD", "s3cret")
+    monkeypatch.delenv("OSINT_GOOGLE_CLIENT_ID", raising=False)
+    cfg = _bare_cfg()
+    cfg["auth"]["oidc"] = {"enabled": True, "issuer": "https://x.example.com",
+                           "client_id": "id"}
+    cfg["auth"]["local"] = {"enabled": True, "allow_with_provider": True}
+    assert auth.local_auth_active(cfg)
+
+
+def test_local_inactive_with_provider_when_flag_false(monkeypatch):
+    # Explicit false behaves like the default failover-only mode.
+    monkeypatch.setenv("OSINT_LOCAL_PASSWORD", "s3cret")
+    monkeypatch.setenv("OSINT_GOOGLE_CLIENT_ID", "some-client-id")
+    cfg = _bare_cfg()
+    cfg["auth"]["local"] = {"enabled": True, "allow_with_provider": False}
+    assert not auth.local_auth_active(cfg)
+
+
+def test_local_cfg_defaults_allow_with_provider_false():
+    assert auth.local_cfg({})["allow_with_provider"] is False
+    assert auth.local_cfg({"auth": {"local": {}}})["allow_with_provider"] is False
+
+
+def test_verify_local_password_custom_env(monkeypatch):
+    monkeypatch.setenv("MY_LOCAL_PW", "s3cret")
+    monkeypatch.delenv("OSINT_LOCAL_PASSWORD", raising=False)
+    assert auth.verify_local_password("s3cret", password_env="MY_LOCAL_PW") is True
+    with pytest.raises(auth.AuthError):
+        auth.verify_local_password("s3cret")  # default env var is unset

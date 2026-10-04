@@ -43,13 +43,16 @@ auth:
   allowed_google_emails: []
   # Signed-cookie session lifetime.
   session_timeout_minutes: 720
-  # Local password failover: when no OAuth/OIDC provider is configured and
-  # OSINT_LOCAL_PASSWORD is set, the login page offers a password form.
-  # Never active alongside a configured provider; never active without the
-  # password set (fail closed). Store the password in 1Password, never here.
+  # Local password login: when OSINT_LOCAL_PASSWORD is set, the login page
+  # offers a password form. Failover by default (only when no OAuth/OIDC
+  # provider is configured); allow_with_provider: true also offers it
+  # alongside a configured provider so other testers can sign in with the
+  # shared password. Never active without the password set (fail closed).
+  # Store the password in 1Password, never here.
   local:
     enabled: true
     password_env: OSINT_LOCAL_PASSWORD
+    allow_with_provider: true
   google:
     # Client ID from Google Cloud console. Secret comes from env only.
     client_id: null

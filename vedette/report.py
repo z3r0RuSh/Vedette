@@ -84,6 +84,8 @@ COMPARISON_TITLES = {
     "company": "Provider Comparison",
     "software": "Software Comparison",
     "domain": "Domain Comparison",
+    "person": "People Comparison",
+    "email": "Email Comparison",
     "mixed": "Target Comparison",
 }
 

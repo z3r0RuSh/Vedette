@@ -29,6 +29,9 @@ from . import prompts
 from . import report as report_mod
 from . import scope
 from . import search as search_mod
+from . import emailintel
+from . import social
+from . import threatintel
 
 
 DEFAULT_CONFIG = {
@@ -41,6 +44,12 @@ DEFAULT_CONFIG = {
     # Built-in web search run by the research legs before each axis model
     # call. Works with every backend, including local Ollama.
     "tool_search": True,
+    # Built-in identity tools: username enumeration, Gravatar, email
+    # deliverability checks, HIBP breach lookup (keyed, skipped without key).
+    "identity_tools": True,
+    # Threat-intel enrichment for domain legs: VirusTotal/OTX (keyed,
+    # skipped without keys), urlscan.io and crt.sh (keyless).
+    "threat_intel": True,
     "search": {
         "provider": "auto",   # auto | duckduckgo | serper | bing
         "max_results": 6,
@@ -54,6 +63,14 @@ class ConfigError(models.ConfigError):
     pass
 
 
+def check_profile(profile):
+    """Validate a collection profile name; raises ConfigError on unknown."""
+    try:
+        return prompts.check_profile(profile)
+    except ValueError as exc:
+        raise ConfigError(str(exc))
+
+
 def load_config(path):
     """Load config.yaml, apply defaults, validate provider names."""
     cfg = copy.deepcopy(DEFAULT_CONFIG)
@@ -63,7 +80,8 @@ def load_config(path):
         for section in ("research_backend", "synthesis_backend", "search"):
             if section in user_cfg and isinstance(user_cfg[section], dict):
                 cfg[section].update(user_cfg[section])
-        for key in ("ollama_url", "web_search", "tool_search"):
+        for key in ("ollama_url", "web_search", "tool_search",
+                    "identity_tools", "threat_intel"):
             if key in user_cfg:
                 cfg[key] = user_cfg[key]
     # Propagate ollama_url into the ollama backend section(s).
@@ -197,8 +215,151 @@ def _axis_search_context(cfg, target, axis, out_dir):
         return ""
 
 
+def _identity_tool_context(cfg, target, axis, identity, out_dir):
+    """Run built-in identity tools for email/social axes; never raises.
+
+    Email targets: deliverability (DoH MX), breach exposure (HIBP, keyed),
+    associations (Gravatar + handle enumeration on the local part).
+    Person targets (p_social): handle enumeration on known handles from the
+    identity plus name-derived candidates.
+    """
+    if not cfg.get("identity_tools", True):
+        return ""
+    ttype = target["type"]
+    if ttype == "email" and axis not in ("e_deliverability", "e_breaches",
+                                         "e_associations"):
+        return ""
+    if ttype == "person" and axis != "p_social":
+        return ""
+    if ttype not in ("email", "person"):
+        return ""
+
+    def _audit(record):
+        append_audit(out_dir, record)
+
+    blocks = []
+    try:
+        if ttype == "email":
+            raw = target.get("name") or ""
+            if "@" not in raw:
+                raw = target.get("url") or ""
+            parsed = emailintel.parse_email(raw)
+            if not parsed and isinstance(identity, dict):
+                parsed = emailintel.parse_email(identity.get("email") or "")
+            if not parsed:
+                return ""
+            email = parsed["email"]
+            if axis == "e_deliverability":
+                try:
+                    mx = emailintel.mx_records(parsed["domain"])
+                except Exception as exc:  # noqa: BLE001 - keep going
+                    _audit({"event": "emailintel_error", "tool": "mx",
+                            "error": str(exc)})
+                    mx = []
+                _audit({"event": "emailintel_lookup", "tool": "mx",
+                        "query": parsed["domain"],
+                        "result_count": len(mx)})
+                blocks.append(emailintel.format_deliverability(parsed, mx))
+            elif axis == "e_breaches":
+                has_key = bool(os.environ.get(emailintel.HIBP_KEY_ENV))
+                breaches = emailintel.hibp_breaches(email)
+                _audit({"event": "hibp_lookup",
+                        "outcome": ("skipped_no_key" if not has_key
+                                    else ("ok" if breaches is not None
+                                          else "error")),
+                        "breach_count": len(breaches) if breaches else 0})
+                blocks.append(emailintel.format_breaches(email, breaches))
+            elif axis == "e_associations":
+                client = social.SocialClient()
+                grav = client.gravatar_hit(email)
+                _audit({"event": "gravatar_lookup",
+                        "outcome": ("hit" if grav else
+                                    ("miss" if grav is False else "unknown"))})
+                lines = ["## Gravatar",
+                         "Avatar for %s: %s"
+                         % (email, "found" if grav else
+                            ("none" if grav is False else "lookup failed"))]
+                blocks.append("\n".join(lines))
+                for handle in social.handles_for_email_local(parsed["local"]):
+                    results = client.enumerate(handle, _audit)
+                    blocks.append("### Candidate handle: %s\n%s"
+                                  % (handle, social.format_results(results)))
+        else:  # person, p_social
+            handles = []
+            if isinstance(identity, dict):
+                raw_handles = identity.get("handles") or []
+                if isinstance(raw_handles, str):
+                    raw_handles = re.split(r"[,;\s]+", raw_handles)
+                for h in raw_handles:
+                    h = social.sanitize_handle(h)
+                    if h and h not in handles:
+                        handles.append(h)
+            for h in social.handles_for_name(target.get("name") or ""):
+                if h not in handles:
+                    handles.append(h)
+            handles = handles[:5]
+            if not handles:
+                return ""
+            client = social.SocialClient()
+            for handle in handles:
+                results = client.enumerate(handle, _audit)
+                blocks.append("### Candidate handle: %s\n%s"
+                              % (handle, social.format_results(results)))
+    except Exception as exc:  # noqa: BLE001 - tools must not kill a run
+        _audit({"event": "identity_tool_error", "axis": axis,
+                "error": str(exc)})
+        return ""
+    return "\n\n".join(blocks)
+
+
+def _threat_tool_context(cfg, target, axis, out_dir):
+    """Threat-intel enrichment for domain axes; never raises.
+
+    phishing: VirusTotal report + OTX pulses + urlscan.io scans.
+    infra/tls: crt.sh certificate-transparency subdomains.
+    """
+    if not cfg.get("threat_intel", True):
+        return ""
+    if target["type"] != "domain":
+        return ""
+    if axis not in ("phishing", "infra", "tls"):
+        return ""
+    domain = search_mod._domain_of(target.get("name") or "",
+                                   target.get("url") or "")
+    if not domain:
+        return ""
+
+    def _audit(record):
+        append_audit(out_dir, record)
+
+    blocks = []
+    try:
+        if axis == "phishing":
+            blocks.append(threatintel.format_vt_report(
+                domain, threatintel.vt_domain_report(domain, _audit)))
+            blocks.append(threatintel.format_otx_intel(
+                domain, threatintel.otx_domain_intel(domain, _audit)))
+            scans = threatintel.urlscan_search(domain)
+            _audit({"event": "threatintel_lookup", "source": "urlscan",
+                    "query": domain, "outcome": "ok",
+                    "result_count": len(scans)})
+            blocks.append(threatintel.format_urlscan(domain, scans))
+        else:  # infra, tls
+            subs = threatintel.crtsh_subdomains(domain)
+            _audit({"event": "threatintel_lookup", "source": "crt.sh",
+                    "query": domain, "outcome": "ok",
+                    "result_count": len(subs)})
+            blocks.append(threatintel.format_crtsh(domain, subs))
+    except Exception as exc:  # noqa: BLE001 - tools must not kill a run
+        _audit({"event": "threatintel_error", "axis": axis,
+                "error": str(exc)})
+        return ""
+    return "\n\n".join(blocks)
+
+
 def run_axis(research_backend, axis, identity, out_dir, web_search,
-             progress_cb=None, search_context="", target=None):
+             progress_cb=None, search_context="", target=None,
+             system_prompt=None):
     _emit(progress_cb, "research",
           "Researching: %s" % prompts.AXIS_TITLES[axis], target=target)
     prompt = prompts.build_axis_prompt(axis, identity)
@@ -206,7 +367,7 @@ def run_axis(research_backend, axis, identity, out_dir, web_search,
         prompt += "\n\n" + search_context
     result = research_backend.chat(
         [{"role": "user", "content": prompt}],
-        system=prompts.SYSTEM_RESEARCH,
+        system=system_prompt or prompts.SYSTEM_RESEARCH,
         web_search=web_search,
     )
     _audit_call(out_dir, "research_" + axis, result, web_search=web_search)
@@ -214,13 +375,14 @@ def run_axis(research_backend, axis, identity, out_dir, web_search,
 
 
 def synthesize(synthesis_backend, identity, axis_texts, out_dir,
-               progress_cb=None, target=None, axes=None):
+               progress_cb=None, target=None, axes=None, intel_style=False):
     _emit(progress_cb, "synthesize", "Synthesizing assessment brief",
           target=target)
     result = synthesis_backend.chat(
         [{"role": "user",
           "content": prompts.build_synthesis_prompt(identity, axis_texts,
-                                                     axes=axes)}],
+                                                     axes=axes,
+                                                     intel_style=intel_style)}],
         system=prompts.SYSTEM_SYNTHESIS,
         web_search=False,
     )
@@ -228,34 +390,46 @@ def synthesize(synthesis_backend, identity, axis_texts, out_dir,
     return result.text
 
 
-def assess_target(cfg, target, out_dir, progress_cb=None):
+def assess_target(cfg, target, out_dir, progress_cb=None, profile="security"):
     """Run the full pipeline for one target dict; returns a summary dict."""
+    profile = check_profile(profile)
     target = normalize_target(target)
     name, target_type = target["name"], target["type"]
-    axes = prompts.axes_for_type(target_type)
+    axes = prompts.axes_for_type(target_type, profile)
     research_backend, synthesis_backend = models.select_backends(cfg)
     web_search = bool(cfg.get("web_search", True))
+    intel = prompts.is_intel_brief(profile, target_type)
+    system_prompt = (prompts.SYSTEM_RESEARCH_OSINT if intel
+                     else prompts.SYSTEM_RESEARCH)
     os.makedirs(out_dir, exist_ok=True)
     append_audit(out_dir, {"event": "assessment_started", "target": name,
                            "url": target.get("url") or "",
-                           "type": target_type})
+                           "type": target_type, "profile": profile})
 
     identity = resolve_identity(synthesis_backend, name, target.get("url", ""),
                                 out_dir, progress_cb, target_type)
     axis_texts = {}
     for axis in axes:
         search_context = _axis_search_context(cfg, target, axis, out_dir)
+        identity_context = _identity_tool_context(
+            cfg, target, axis, identity, out_dir)
+        threat_context = _threat_tool_context(cfg, target, axis, out_dir)
+        context = "\n\n".join(p for p in
+                               (search_context, identity_context,
+                                threat_context) if p)
         axis_texts[axis] = run_axis(
             research_backend, axis, json.dumps(identity), out_dir, web_search,
-            progress_cb, search_context=search_context, target=name,
+            progress_cb, search_context=context, target=name,
+            system_prompt=system_prompt,
         )
     synthesis_text = synthesize(
         synthesis_backend, json.dumps(identity), axis_texts, out_dir,
-        progress_cb, target=name, axes=axes,
+        progress_cb, target=name, axes=axes, intel_style=intel,
     )
 
     meta = {
         "target_type": target_type,
+        "profile": profile,
         "research_backend": "%s/%s" % (research_backend.kind,
                                        research_backend.model),
         "synthesis_backend": "%s/%s" % (synthesis_backend.kind,
@@ -337,8 +511,10 @@ def _unique_dir(base_out_dir, name, used):
     return os.path.join(base_out_dir, candidate)
 
 
-def assess_many(cfg, targets, base_out_dir, progress_cb=None):
+def assess_many(cfg, targets, base_out_dir, progress_cb=None,
+                profile="security"):
     """Assess a list of targets (dicts or tuples); compare when > 1."""
+    profile = check_profile(profile)
     targets = [normalize_target(t) for t in targets]
     if not targets:
         raise ConfigError("No targets given.")
@@ -347,7 +523,8 @@ def assess_many(cfg, targets, base_out_dir, progress_cb=None):
     used_dirs = set()
     for target in targets:
         out_dir = _unique_dir(base_out_dir, target["name"], used_dirs)
-        results.append(assess_target(cfg, target, out_dir, progress_cb))
+        results.append(assess_target(cfg, target, out_dir, progress_cb,
+                                     profile=profile))
     comparison = None
     if len(results) > 1:
         comparison = compare_targets(cfg, results, base_out_dir, progress_cb)

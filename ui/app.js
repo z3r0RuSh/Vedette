@@ -64,6 +64,7 @@ async function loadUser() {
 async function loadRuns() {
   const r = await api("/api/runs");
   const data = await r.json();
+  document.getElementById("run-count").textContent = String(data.runs.length).padStart(2, "0");
   const list = document.getElementById("run-list");
   if (!data.runs.length) { list.innerHTML = '<p class="muted">No runs yet.</p>'; return; }
   list.innerHTML = "";
@@ -78,12 +79,56 @@ async function loadRuns() {
   }
 }
 
+async function loadActivity() {
+  const box = document.getElementById("activity-list");
+  try {
+    const r = await api("/api/activity?limit=60");
+    const data = await r.json();
+    const state = document.getElementById("journal-state");
+    const hint = document.getElementById("journal-hint");
+    if (!data.enabled) {
+      state.textContent = "OFFLINE";
+      document.getElementById("journal-live").textContent = "● DISABLED";
+      document.getElementById("journal-live").classList.add("inactive");
+      hint.textContent = "Set DATABASE_URL to enable PostgreSQL";
+      box.innerHTML = '<p class="empty-state">Connect a local PostgreSQL database with <code>DATABASE_URL</code> to keep a durable activity journal.</p>';
+      return;
+    }
+    if (!r.ok) throw new Error(data.error || "Journal unavailable");
+    state.textContent = "CONNECTED";
+    document.getElementById("journal-live").textContent = "● CONNECTED";
+    document.getElementById("journal-live").classList.remove("inactive");
+    hint.textContent = data.events.length + " recent events · PostgreSQL";
+    if (!data.events.length) { box.innerHTML = '<p class="empty-state">Your activity will appear here as you use Vedette.</p>'; return; }
+    box.innerHTML = "";
+    for (const event of data.events) {
+      const row = document.createElement("div");
+      row.className = "activity-row";
+      const when = new Date(event.occurred_at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const dot = document.createElement("span"); dot.className = "activity-dot";
+      const main = document.createElement("div"); main.className = "activity-main";
+      const title = document.createElement("strong"); title.textContent = event.action.replaceAll(".", " · ").replaceAll("_", " ");
+      const sub = document.createElement("span"); sub.textContent = (event.resource || "workspace") + " · " + (event.actor || "system");
+      const time = document.createElement("time"); time.textContent = when;
+      main.append(title, sub); row.append(dot, main, time); box.append(row);
+    }
+  } catch (err) {
+    document.getElementById("journal-state").textContent = "UNAVAILABLE";
+    document.getElementById("journal-live").textContent = "● UNAVAILABLE";
+    document.getElementById("journal-live").classList.add("inactive");
+    document.getElementById("journal-hint").textContent = "Check local PostgreSQL settings";
+    box.innerHTML = '<p class="empty-state">The PostgreSQL journal could not be reached. Check the local service and <code>DATABASE_URL</code>.</p>';
+  }
+}
+
+document.getElementById("refresh-activity").onclick = loadActivity;
+
 document.getElementById("logout-btn").onclick = async () => {
   await api("/auth/logout", { method: "POST" });
   window.location = "/login";
 };
 
-const KNOWN_TYPES = ["company", "software", "domain"];
+const KNOWN_TYPES = ["company", "software", "domain", "person", "email"];
 
 // Parse one textarea line: "Name", "Name=https://url", "Name|software",
 // "https://example.com|domain". A |type suffix overrides the default.
@@ -120,6 +165,7 @@ document.getElementById("assess-form").onsubmit = async (e) => {
   const body = {
     targets,
     default_type: defaultType,
+    profile: document.getElementById("f-profile").value || "security",
     research_provider: document.getElementById("f-provider").value || null,
     research_model: document.getElementById("f-model").value.trim() || null,
   };
@@ -218,3 +264,5 @@ async function loadReport(runId) {
 
 loadUser();
 loadRuns();
+loadActivity();
+setInterval(loadActivity, 15000);

@@ -8,6 +8,7 @@ signed-cookie session. Secrets come from env vars only and are never logged.
 from __future__ import annotations
 
 import copy
+import asyncio
 import json
 import logging
 import os
@@ -28,6 +29,7 @@ from urllib.parse import unquote_plus
 
 from . import auth
 from . import orchestrator
+from .activity import from_environment
 
 log = logging.getLogger("vedette.server")
 
@@ -41,6 +43,9 @@ TRACKED_SECRETS = [
     "ANTHROPIC_API_KEY",
     "SERPER_API_KEY",
     "BING_API_KEY",
+    "HIBP_API_KEY",
+    "VT_API_KEY",
+    "OTX_API_KEY",
     "OSINT_GOOGLE_CLIENT_ID",
     "OSINT_GOOGLE_CLIENT_SECRET",
     "OSINT_OIDC_CLIENT_ID",
@@ -149,6 +154,13 @@ def create_app(cfg=None):
 
     runs = {}
     runs_lock = threading.Lock()
+    activity = from_environment()
+    if activity.enabled:
+        try:
+            activity.initialize()
+            log.info("PostgreSQL activity journal enabled")
+        except Exception:
+            log.exception("PostgreSQL activity journal could not initialize")
 
     # -- public-path predicate -------------------------------------------------
     def _is_public(path):
@@ -168,7 +180,13 @@ def create_app(cfg=None):
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
             return RedirectResponse("/login", status_code=302)
         request.state.user = user
-        return await call_next(request)
+        response = await call_next(request)
+        if request.url.path.startswith("/api/") and request.url.path != "/api/activity":
+            await asyncio.to_thread(activity.record, user.get("email"),
+                                    "http." + request.method.lower(),
+                                    request.url.path, response.status_code,
+                                    {"method": request.method})
+        return response
 
     # -- static UI -------------------------------------------------------------
     if os.path.isdir(UI_DIR):
@@ -194,23 +212,32 @@ def create_app(cfg=None):
             buttons += '<a class="btn" href="/auth/google/login">Sign in with Google</a>'
         if o["enabled"]:
             buttons += '<a class="btn" href="/auth/oidc/login">Sign in with SSO</a>'
-        if not buttons:
-            if auth.local_auth_active(cfg):
+        local_form = (
+            '<form method="post" action="/auth/local/login">'
+            '<input type="password" name="password" '
+            'placeholder="Local password" autocomplete="current-password" '
+            'required autofocus>'
+            '<button class="btn primary" type="submit">Sign in locally</button>'
+            '</form>'
+        )
+        if auth.local_auth_active(cfg):
+            if buttons:
+                # Local login explicitly allowed alongside the provider(s):
+                # offered as an alternative for testers with the shared password.
+                buttons += ('<div class="local-alt">'
+                            '<p>Or sign in with the shared local password:</p>'
+                            + local_form + '</div>')
+            else:
                 buttons = (
-                    '<form method="post" action="/auth/local/login">'
-                    '<input type="password" name="password" '
-                    'placeholder="Local password" autocomplete="current-password" '
-                    'required autofocus>'
-                    '<button class="btn primary" type="submit">Sign in locally</button>'
-                    '</form>'
+                    local_form +
                     '<p style="font-size:0.85rem;opacity:0.75">Local failover is active '
                     'because no OAuth/OIDC provider is configured. Set up Google '
                     'OAuth or OIDC to switch to single sign-on.</p>'
                 )
-            else:
-                buttons = ('<p class="error">No login provider is configured. '
-                           'Set OSINT_LOCAL_PASSWORD for local sign-in, or set up '
-                           'Google OAuth or OIDC (see README).</p>')
+        elif not buttons:
+            buttons = ('<p class="error">No login provider is configured. '
+                       'Set OSINT_LOCAL_PASSWORD for local sign-in, or set up '
+                       'Google OAuth or OIDC (see README).</p>')
         return HTMLResponse(
             "<!doctype html><html><head><meta charset='utf-8'>"
             "<meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -313,7 +340,8 @@ def create_app(cfg=None):
                 password = unquote_plus(v)
                 break
         try:
-            auth.verify_local_password(password)
+            auth.verify_local_password(
+                password, password_env=auth.local_cfg(cfg)["password_env"])
         except auth.AuthError:
             time.sleep(1)  # slow down password guessing
             log.warning("local login failed: incorrect password")
@@ -333,6 +361,18 @@ def create_app(cfg=None):
     def me(request: Request):
         user = request.state.user
         return {"email": user["email"], "name": user.get("name", "")}
+
+    @app.get("/api/activity")
+    def activity_feed(limit: int = 100):
+        if not activity.enabled:
+            return {"enabled": False, "events": []}
+        try:
+            return {"enabled": True, "events": activity.recent(max(1, min(limit, 250)))}
+        except Exception:
+            log.exception("Could not read PostgreSQL activity journal")
+            return JSONResponse({"enabled": True, "events": [],
+                                 "error": "PostgreSQL activity journal unavailable"},
+                                status_code=503)
 
     def _read_run_meta(run_dir):
         meta_path = os.path.join(run_dir, "run.json")
@@ -370,6 +410,12 @@ def create_app(cfg=None):
             return JSONResponse({"error": str(exc)}, status_code=400)
         provider = body.get("research_provider")
         model = body.get("research_model")
+        from .prompts import PROFILES
+        profile = (body.get("profile") or "security").lower()
+        if profile not in PROFILES:
+            return JSONResponse(
+                {"error": "unknown profile %r" % body.get("profile")},
+                status_code=400)
 
         run_cfg = copy.deepcopy(cfg)
         if provider:
@@ -396,9 +442,14 @@ def create_app(cfg=None):
         meta = {"id": run_id, "org": display, "url": first["url"],
                 "status": "running", "created": created,
                 "targets": [{"name": t["name"], "type": t["type"],
-                             "url": t["url"]} for t in targets]}
+                             "url": t["url"]} for t in targets],
+                "profile": profile}
         with open(os.path.join(run_dir, "run.json"), "w", encoding="utf-8") as fh:
             json.dump(meta, fh)
+        await asyncio.to_thread(
+            activity.record, getattr(request.state, "user", {}).get("email"),
+            "assessment.started", run_id, 202,
+            {"targets": [t["name"] for t in targets], "profile": profile})
 
         def _progress(phase, detail, target=None):
             with runs_lock:
@@ -418,7 +469,8 @@ def create_app(cfg=None):
                                 "created": created, "targets": target_state}
             try:
                 results, _ = orchestrator.assess_many(
-                    run_cfg, targets, run_dir, progress_cb=_progress)
+                    run_cfg, targets, run_dir, progress_cb=_progress,
+                    profile=profile)
                 final = "done"
                 err = ""
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI
@@ -429,6 +481,9 @@ def create_app(cfg=None):
             with runs_lock:
                 runs[run_id]["status"] = final
                 runs[run_id]["error"] = err
+            activity.record("system", "assessment." + final, run_id,
+                            200 if final == "done" else 500,
+                            {"target_count": len(targets)})
             meta = _read_run_meta(run_dir) or {}
             meta.update({"id": run_id, "org": display, "url": first["url"],
                          "status": final, "created": created, "error": err,

@@ -14,12 +14,16 @@ from vedette import models, orchestrator, prompts, report as report_mod
 # ---------------------------------------------------------------------------
 
 def test_axis_prompts_cover_all_axes():
-    all_axes = [a for t in prompts.TARGET_TYPES for a in prompts.axes_for_type(t)]
+    all_axes = [a
+                for p in prompts.PROFILES
+                for t in prompts.TARGET_TYPES
+                for a in prompts.axes_for_type(t, p)]
     assert set(all_axes) == set(prompts.AXIS_PROMPTS)
     assert set(all_axes) == set(prompts.AXIS_TITLES)
-    # company axes keep their historic names
+    # company axes keep their historic names under the security profile
     assert set(prompts.AXES) == {"jurisdiction", "contractual", "compliance",
                                  "incidents", "posture"}
+    assert tuple(prompts.axes_for_type("company")) == prompts.AXES
 
 
 def test_axes_for_type_rejects_unknown():

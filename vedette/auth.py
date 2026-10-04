@@ -4,10 +4,12 @@
   approved Google account emails.
 - Generic OIDC SSO provider as an alternative, restricted to an email
   allowlist and/or allowed email domains.
-- Local password failover: when no OAuth/OIDC provider is configured and
-  OSINT_LOCAL_PASSWORD is set, the login page offers a password form instead
-  of bricking. Never active alongside a configured provider, and never
-  active without a password (fail closed).
+- Local password login: when OSINT_LOCAL_PASSWORD is set, the login page
+  offers a password form. Failover by default: only when no OAuth/OIDC
+  provider is configured. With auth.local.allow_with_provider: true in
+  config.yaml it is also offered alongside a configured provider, so other
+  testers can sign in with the shared password. Never active without a
+  password (fail closed).
 - Sessions are signed cookies (itsdangerous) with a configurable timeout.
 - No anonymous access: every route that triggers research or reads past
   assessments requires a valid session.
@@ -120,44 +122,46 @@ def session_timeout_seconds(cfg):
 
 
 # ---------------------------------------------------------------------------
-# Local password failover
+# Local password login
 # ---------------------------------------------------------------------------
-# Offered on the login page only when no OAuth/OIDC provider is configured
-# AND a local password is set. This keeps a fresh install usable before OAuth
-# is wired up, without ever permitting unauthenticated access.
+# Offered on the login page when a local password is set. Failover by
+# default (only when no OAuth/OIDC provider is configured); with
+# auth.local.allow_with_provider: true it is also offered alongside a
+# configured provider so other testers can sign in with the shared
+# password. Never active without a password (fail closed).
 
 def local_cfg(cfg):
     l = auth_cfg(cfg).get("local") or {}
     return {
         "enabled": bool(l.get("enabled", True)),
         "password_env": l.get("password_env") or "OSINT_LOCAL_PASSWORD",
+        "allow_with_provider": bool(l.get("allow_with_provider", False)),
     }
 
 
 def local_auth_active(cfg):
-    """True when the local password failover should be offered.
+    """True when local password login should be offered.
 
-    Failover only: never active alongside a configured OAuth/OIDC provider,
-    and never active without a password set (fail closed).
+    Failover by default: not offered alongside a configured OAuth/OIDC
+    provider unless auth.local.allow_with_provider is true. Never active
+    without a password set (fail closed).
     """
     l = local_cfg(cfg)
     if not l["enabled"]:
         return False
     if not _env(l["password_env"]):
         return False
-    if google_cfg(cfg)["enabled"]:
-        return False
-    if oidc_cfg(cfg)["enabled"]:
-        return False
+    if google_cfg(cfg)["enabled"] or oidc_cfg(cfg)["enabled"]:
+        return l["allow_with_provider"]
     return True
 
 
-def verify_local_password(provided):
+def verify_local_password(provided, password_env="OSINT_LOCAL_PASSWORD"):
     """Constant-time password check. Raises AuthError on mismatch/misconfig.
 
     The password value itself is never logged; only pass/fail is recorded.
     """
-    expected = _env("OSINT_LOCAL_PASSWORD")
+    expected = _env(password_env)
     if not expected:
         raise AuthError("Local login is not configured.")
     if not hmac.compare_digest(str(provided or ""), expected):

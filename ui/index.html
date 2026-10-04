@@ -8,15 +8,17 @@
 </head>
 <body>
 <header>
-  <h1>Vedette</h1>
+  <div class="brand"><span class="brand-mark">V</span><div><h1>VEDETTE</h1><p>INTELLIGENCE OPERATIONS</p></div></div>
   <div class="userbox">
     <span id="user-email"></span>
     <button id="logout-btn" class="btn small">Sign out</button>
   </div>
 </header>
 <main>
+  <section class="welcome"><div><p class="eyebrow">LOCAL ANALYST CONSOLE</p><h2>See the whole picture.</h2><p class="muted">Run focused assessments, follow progress, and keep an auditable record of activity.</p></div><div class="welcome-orbit"><span>V</span></div></section>
+  <section class="overview"><article class="metric"><span>WORKSPACE</span><strong>LOCAL</strong><small>Runs on this machine</small></article><article class="metric"><span>ASSESSMENTS</span><strong id="run-count">—</strong><small>Runs in history</small></article><article class="metric"><span>ACTIVITY JOURNAL</span><strong id="journal-state">CHECKING</strong><small id="journal-hint">PostgreSQL connection</small></article></section>
   <section class="card">
-    <h2>New assessment</h2>
+    <div class="section-heading"><div><p class="eyebrow">01 / COLLECT</p><h2>New assessment</h2></div><span class="section-note">Configure a collection run</span></div>
     <form id="assess-form">
       <label>Targets (one per line)
         <textarea id="f-targets" rows="4" required placeholder="GreenNode&#10;nginx|software&#10;example.com|domain&#10;Acme=https://acme.com"></textarea>
@@ -30,6 +32,18 @@
             <option value="company">company</option>
             <option value="software">software</option>
             <option value="domain">domain</option>
+            <option value="person">person</option>
+            <option value="email">email</option>
+          </select>
+        </label>
+        <label>Collection profile
+          <select id="f-profile">
+            <option value="security">security (assessment playbook)</option>
+            <option value="corporate">corporate (ownership, leadership, financials…)</option>
+            <option value="financial">financial (funding, investors, M&amp;A…)</option>
+            <option value="reputation">reputation (coverage, controversies…)</option>
+            <option value="technology">technology (stack, eng, patents…)</option>
+            <option value="full">full (everything)</option>
           </select>
         </label>
         <label>Research backend
@@ -50,9 +64,11 @@
   </section>
 
   <section class="card">
-    <h2>Runs</h2>
+    <div class="section-heading"><div><p class="eyebrow">02 / REVIEW</p><h2>Run history</h2></div><span class="section-note">Select a run to inspect its reports</span></div>
     <div id="run-list"><p class="muted">Loading…</p></div>
   </section>
+
+  <section class="card activity-card"><div class="section-heading"><div><p class="eyebrow">03 / AUDIT</p><h2>Recent activity</h2></div><div class="activity-actions"><span id="journal-live" class="live-indicator">● CHECKING</span><button id="refresh-activity" class="btn small">Refresh</button></div></div><div id="activity-list"><p class="muted">Connecting to the local journal…</p></div></section>
 
   <section class="card hidden" id="detail-card">
     <h2 id="detail-title">Run detail</h2>

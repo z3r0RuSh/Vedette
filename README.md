@@ -20,8 +20,38 @@ anonymous access.
 | `company` | jurisdiction/legal exposure & state access; contractual data protections; compliance/assurance; incident/breach history; security-posture signals |
 | `software` | supply chain/provenance (repo, maintainers, signing, SBOM); vulnerability history (CVEs, advisories); update cadence & support; data handling/telemetry & licensing; assurance (audits, bug bounty) |
 | `domain` | WHOIS/registration; DNS/hosting & jurisdiction; TLS posture; incident/phishing history; related infrastructure |
+| `person` | background/biography; career history; affiliations & network; public presence; controversies & legal issues; social media profiles |
+| `email` | address format & pattern analysis; domain & deliverability signals; breach exposure; associated accounts & profiles |
 
-All axes are OSINT + security focused. Non-security requests (e.g. using the
+## Collection profiles (`--profile`)
+
+Profiles swap the company axes for intelligence-collection requirements and
+write the brief in intelligence style (key judgments tagged
+[High/Medium/Low] analytic confidence, plus a collection-gaps section).
+`software`, `domain`, and `person` targets keep their type axes under every
+profile.
+
+| Profile | Company axes |
+|---|---|
+| `security` (default) | the five security axes above |
+| `corporate` | ownership & structure; leadership & key people; financials & scale; geographic footprint; partnerships/customers |
+| `financial` | funding history; investors & backers; revenue signals; M&A activity; valuation |
+| `reputation` | media coverage; controversies & lawsuits; regulatory actions; public/employee sentiment |
+| `technology` | tech-stack signals; engineering-org signals; patents & R&D; open-source presence |
+| `full` | security axes + all four OSINT profiles (23 axes) |
+
+```bash
+python -m vedette.server  # GUI: profile picker on the New assessment card
+python run_assessment.py --target "Acme" --profile corporate
+python run_assessment.py --target "Jane Doe|person"
+python run_assessment.py --target "Acme" --profile full --backend anthropic
+```
+
+Person research follows a privacy guardrail: only public or credibly reported
+information; no private personal data (home addresses, family members'
+private identities, contact details).
+
+All axes are OSINT focused. Non-OSINT requests (e.g. using the
 tool as a general Q&A or trivia engine) are refused with a short message.
 
 Every research prompt demands source URLs with dates and requires `NOT FOUND`
@@ -66,6 +96,9 @@ python -m vedette.server
 | `OSINT_ALLOWED_GOOGLE_EMAILS` | Text: comma-separated emails | Google login allowlist (overrides config) |
 | `SERPER_API_KEY` | API credential: Serper API key | built-in web search (`serper` provider; optional) |
 | `BING_API_KEY` | API credential: Bing API key | built-in web search (`bing` provider; optional) |
+| `HIBP_API_KEY` | API credential: HaveIBeenPwned API key | email breach lookup (optional; skipped without it) |
+| `VT_API_KEY` | API credential: VirusTotal API key | domain threat intel (optional; skipped without it) |
+| `OTX_API_KEY` | API credential: AlienVault OTX API key | domain threat intel (optional; skipped without it) |
 | `OSINT_ALLOWED_EMAILS` | Text: comma-separated emails | OIDC email allowlist (overrides config) |
 | `OSINT_ALLOWED_DOMAINS` | Text: comma-separated domains | OIDC domain allowlist (overrides config) |
 | `OSINT_LOCAL_PASSWORD` | Password: GUI sign-in | local password failover (see below) |
@@ -88,15 +121,18 @@ For OIDC instead, set `auth.oidc.enabled: true` with the issuer, client ID,
 and `OSINT_OIDC_CLIENT_SECRET`, plus `allowed_emails` and/or
 `allowed_domains`.
 
-### Local password failover
+### Local password login
 
 When no OAuth/OIDC provider is configured, the GUI is still usable: set
 `OSINT_LOCAL_PASSWORD` and the login page offers a password form instead of
-an error. The failover is strictly a fallback -- it is never offered
+an error. By default this is strictly a failover -- it is never offered
 alongside a configured provider, and without the password set the login page
-stays fail-closed. Passwords are compared in constant time, failed attempts
-are delayed, and setting up Google OAuth or OIDC later automatically
-disables the failover.
+stays fail-closed. Passwords are compared in constant time and failed
+attempts are delayed.
+
+To let other testers sign in with the shared password even when a provider
+is configured, set `auth.local.allow_with_provider: true` in `config.yaml`.
+The login page then shows the password form below the SSO buttons.
 
 ## CLI usage
 
@@ -111,8 +147,19 @@ python run_assessment.py --target "nginx|software" --target "openssl|software"
 python run_assessment.py --target "example.com|domain"
 
 # Target spec forms: "Name", "Name=https://url", "Name|software",
-# "Name=https://url|domain". Bare URLs auto-detect as domains.
+# "Name=https://url|domain", "Jane Doe|person", "jane@example.com|email".
+# Bare URLs auto-detect as domains; bare email addresses as emails.
 # --type sets the default type for all targets.
+
+# Collection profiles: corporate, financial, reputation, technology, full
+python run_assessment.py --target "Acme" --profile corporate
+python run_assessment.py --target "Acme" --profile full
+
+# Person targets (privacy guardrail: public info only)
+python run_assessment.py --target "Jane Doe|person"
+
+# Email targets: format/deliverability/breach/association analysis
+python run_assessment.py --target "jane@example.com|email"
 
 # Back-compat: --org/--url and --compare still work
 python run_assessment.py --org GreenNode --url https://greennode.ai \
@@ -152,7 +199,41 @@ search:
 is set, else DuckDuckGo. Keys are env-only (1Password pattern above);
 search failures are audited and never kill a run.
 
+## Built-in identity & threat-intel tools
+
+Beyond web search, research legs call keyless built-in tools before the
+model call and hand the findings in as tool context. Two config flags in
+`config.yaml` (both default `true`):
+
+| Tool family | Flag | What it does |
+|---|---|---|
+| Identity | `identity_tools` | **Social handle enumeration** (Sherlock-style, ~11 platforms) for person `p_social` and email `e_associations` legs, using known handles plus name-derived candidates; **Gravatar** existence check for email targets; **deliverability** signals via DNS-over-HTTPS MX lookup; **HaveIBeenPwned** breach lookup when `HIBP_API_KEY` is set (skipped gracefully without it) |
+| Threat intel | `threat_intel` | **VirusTotal** domain reports when `VT_API_KEY` is set; **AlienVault OTX** pulses + associated URLs when `OTX_API_KEY` is set; **urlscan.io** recent scans and **crt.sh** certificate-transparency subdomains (both keyless) for domain `phishing` / `infra` / `tls` legs |
+
+Every tool call is audit-logged (source, query, outcome, result counts).
+Keyed sources are optional: without the key the leg runs on keyless tools
+and the model writes `NOT FOUND` for the missing data. Key values are never
+logged, printed, or audited.
+
 ## Web GUI
+
+### Local PostgreSQL activity journal
+
+The GUI can keep a durable journal of authenticated API activity and assessment
+start/completion/failure events in PostgreSQL. Create a local database, set
+`DATABASE_URL`, then launch the server:
+
+```bash
+createdb vedette
+export DATABASE_URL=postgresql://localhost/vedette
+python -m vedette.server
+```
+
+Vedette creates the `vedette_activity` table and time index on startup. The
+journal stores actor, event type, API resource, response status, and small
+non-sensitive details; it does not store request bodies, report contents, or
+credentials. The GUI's Recent activity panel reads the latest events. Without
+`DATABASE_URL`, PostgreSQL tracking is disabled and the rest of the GUI works.
 
 ```bash
 op run --env-file=.env.template -- python -m vedette.server
@@ -189,6 +270,8 @@ configurable timeout (`auth.session_timeout_minutes`); `/auth/logout` ends them.
 | Triage + synthesis (default: local Ollama) | nothing |
 | Web search on research legs | built-in tool: keyless DuckDuckGo by default; `SERPER_API_KEY`/`BING_API_KEY` optional upgrades. Hosted backends can *also* use their own server-side search (`web_search: true`) |
 | GUI sign-in | `OSINT_SESSION_SECRET` always; OAuth/OIDC secrets per provider |
+| Email breach exposure | `HIBP_API_KEY` (HaveIBeenPwned); skipped without it |
+| Domain threat intel | `VT_API_KEY` (VirusTotal), `OTX_API_KEY` (AlienVault OTX); skipped without them; urlscan.io + crt.sh always keyless |
 | Prompts, config parsing, report rendering, auth allowlist | nothing -- covered by the test suite with mocks |
 
 Without any hosted key you can still run the full pipeline on `--backend ollama`
