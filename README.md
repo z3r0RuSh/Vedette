@@ -1,6 +1,7 @@
 # Vedette
 
-<video src="docs/assets/vedette-launch.mp4" width="100%" controls></video>
+<!-- Launch video: uploaded via GitHub's attachment flow; the bare URL below renders as an inline player. -->
+https://github.com/user-attachments/assets/86227f97-f9e2-482a-8f90-bc5601a0806a
 
 Standalone agent: give it targets -- companies, software, domains -- and it
 runs a structured OSINT security playbook, then produces source-linked
