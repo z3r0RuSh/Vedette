@@ -1,7 +1,7 @@
 # Vedette
 
 <!-- Launch video: uploaded via GitHub's attachment flow; the bare URL below renders as an inline player. -->
-https://github.com/user-attachments/assets/86227f97-f9e2-482a-8f90-bc5601a0806a
+https://github.com/user-attachments/assets/92031cb4-da48-4d54-953e-898c2ed6fba8
 
 Standalone agent: give it targets -- companies, software, domains -- and it
 runs a structured OSINT security playbook, then produces source-linked
