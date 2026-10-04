@@ -49,6 +49,104 @@ function renderMarkdown(md) {
 let pollTimer = null;
 let currentReports = null;
 
+// Vedette's compact theme adapter uses the palette model from the supplied
+// theme reference and persists user choices locally in this browser.
+const THEME_KEY = "vedette-theme";
+const CUSTOM_THEMES_KEY = "vedette-custom-themes";
+const THEMES = {
+  dark:{bg:"#282c34",fg:"#9cdef2",panel:"#111111",border:"#355a66",red:"#e06c75"},
+  light:{bg:"#f0ebe3",fg:"#5a5248",panel:"#faf6f0",border:"#d4cdc2",red:"#c47d5a"},
+  midnight:{bg:"#0d1117",fg:"#c9d1d9",panel:"#161b22",border:"#30363d",red:"#f85149"},
+  paper:{bg:"#faf8f5",fg:"#3b3836",panel:"#ffffff",border:"#d5d0c8",red:"#c5ac4a"},
+  cyberpunk:{bg:"#0a0a0f",fg:"#0ff0fc",panel:"#12101a",border:"#9b30ff",red:"#e040fb"},
+  retrowave:{bg:"#1a1a2e",fg:"#e94560",panel:"#16213e",border:"#533483",red:"#e94560"},
+  forest:{bg:"#1b2a1b",fg:"#a8d5a2",panel:"#142414",border:"#3d6b3d",red:"#7cb871"},
+  ocean:{bg:"#0b1a2c",fg:"#64d2ff",panel:"#091422",border:"#1e5074",red:"#4facfe"},
+  ume:{bg:"#2b1b2e",fg:"#f5c2e7",panel:"#1e1420",border:"#6c4675",red:"#f5a0c0"},
+  copper:{bg:"#1c1410",fg:"#e8c39e",panel:"#140f0a",border:"#7a5533",red:"#d4764e"},
+  terminal:{bg:"#000000",fg:"#00ff41",panel:"#0a0a0a",border:"#003b00",red:"#00ff41"},
+  organs:{bg:"#0a0406",fg:"#efe1c8",panel:"#15080a",border:"#3a1519",red:"#c83240"},
+  lavender:{bg:"#f3eef8",fg:"#3d3551",panel:"#faf7ff",border:"#cec3de",red:"#9b6dcc"},
+  gpt:{bg:"#212121",fg:"#ececec",panel:"#171717",border:"#424242",red:"#949494"},
+  claude:{bg:"#262624",fg:"#f5f4f0",panel:"#30302e",border:"#4a4a47",red:"#c6613f"},
+  cute:{bg:"#fff0f5",fg:"#d4608a",panel:"#fff8fa",border:"#f0c0d0",red:"#ff6b9d"}
+};
+function readCustomThemes() {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_THEMES_KEY) || "{}"); }
+  catch (_) { return {}; }
+}
+function applyTheme(colors) {
+  const root = document.documentElement;
+  const vals = {"--bg":colors.bg,"--fg":colors.fg,"--panel":colors.panel,"--border":colors.border,"--red":colors.red,
+    "--surface":colors.panel,"--surface-2":`color-mix(in srgb, ${colors.panel} 86%, ${colors.fg})`,
+    "--line":colors.border,"--text":colors.fg,"--blue":colors.red,"--cyan":colors.fg,
+    "--muted":`color-mix(in srgb, ${colors.fg} 66%, ${colors.bg})`,"--green":colors.fg};
+  for (const [name, value] of Object.entries(vals)) root.style.setProperty(name, value);
+  const rgb = colors.bg.match(/[a-f\d]{2}/gi)?.map(x => parseInt(x, 16)) || [0,0,0];
+  const light = (rgb[0]*299 + rgb[1]*587 + rgb[2]*114)/1000 > 145;
+  root.dataset.themeTone = light ? "light" : "dark";
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", colors.bg);
+  for (const name of ["bg","fg","panel","border","red"]) {
+    document.getElementById("color-" + name).value = colors[name];
+  }
+}
+function initThemes() {
+  const select = document.getElementById("theme-select");
+  if (!select) return;
+  const customs = readCustomThemes();
+  for (const [label, group] of [["Preset themes", THEMES], ["My themes", customs]]) {
+    const optgroup = document.createElement("optgroup"); optgroup.label = label;
+    for (const name of Object.keys(group)) { const option = document.createElement("option"); option.value = name; option.textContent = name[0].toUpperCase()+name.slice(1); optgroup.append(option); }
+    if (optgroup.children.length) select.append(optgroup);
+  }
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(THEME_KEY) || "null"); } catch (_) {}
+  const selected = saved?.name || "dark";
+  select.value = selected;
+  const colors = customs[selected] || THEMES[selected] || THEMES.dark;
+  applyTheme(colors);
+  document.getElementById("delete-theme").classList.toggle("hidden", !customs[selected]);
+  select.onchange = () => {
+    const colors = customs[select.value] || THEMES[select.value] || THEMES.dark;
+    applyTheme(colors); localStorage.setItem(THEME_KEY, JSON.stringify({name:select.value}));
+    document.getElementById("delete-theme").classList.toggle("hidden", !customs[select.value]);
+    document.getElementById("theme-name").value = customs[select.value] ? select.value : "";
+  };
+  for (const name of ["bg","fg","panel","border","red"]) {
+    document.getElementById("color-"+name).oninput = () => {
+      const next = Object.fromEntries(["bg","fg","panel","border","red"].map(key => [key, document.getElementById("color-"+key).value]));
+      applyTheme(next); localStorage.setItem(THEME_KEY, JSON.stringify({name:select.value, colors:next}));
+    };
+  }
+  if (saved?.colors) applyTheme(saved.colors);
+  document.getElementById("save-theme").onclick = () => {
+    const name = document.getElementById("theme-name").value.trim();
+    const message = document.getElementById("theme-message");
+    if (!name) { message.textContent = "Enter a name for this theme."; return; }
+    const current = readCustomThemes();
+    if (Object.keys(THEMES).some(preset => preset.toLowerCase() === name.toLowerCase()) && !current[name]) { message.textContent = "Choose a name that does not match a preset."; return; }
+    if (!current[name] && Object.keys(current).length >= 8) { message.textContent = "You can save up to 8 custom themes."; return; }
+    current[name] = Object.fromEntries(["bg","fg","panel","border","red"].map(key => [key, document.getElementById("color-"+key).value]));
+    localStorage.setItem(CUSTOM_THEMES_KEY, JSON.stringify(current));
+    localStorage.setItem(THEME_KEY, JSON.stringify({name}));
+    const existing = [...select.options].find(option => option.value === name);
+    if (!existing) {
+      let group = select.querySelector('optgroup[label="My themes"]');
+      if (!group) { group=document.createElement("optgroup"); group.label="My themes"; select.append(group); }
+      const option = document.createElement("option"); option.value=name; option.textContent=name; group.append(option);
+    }
+    select.value=name; document.getElementById("delete-theme").classList.remove("hidden"); message.textContent="Theme saved in this browser.";
+  };
+  document.getElementById("delete-theme").onclick = () => {
+    const name=select.value, current=readCustomThemes(); if (!current[name]) return;
+    delete current[name]; localStorage.setItem(CUSTOM_THEMES_KEY,JSON.stringify(current));
+    localStorage.setItem(THEME_KEY,JSON.stringify({name:"dark"}));
+    select.querySelectorAll("optgroup").forEach(group => [...group.options].forEach(option => { if (option.value === name) option.remove(); }));
+    select.value="dark"; applyTheme(THEMES.dark); document.getElementById("delete-theme").classList.add("hidden");
+    document.getElementById("theme-name").value=""; document.getElementById("theme-message").textContent="Custom theme deleted.";
+  };
+}
+
 async function api(path, opts) {
   const r = await fetch(path, opts);
   if (r.status === 401) { window.location = "/login"; throw new Error("unauthorized"); }
@@ -265,4 +363,5 @@ async function loadReport(runId) {
 loadUser();
 loadRuns();
 loadActivity();
+initThemes();
 setInterval(loadActivity, 15000);
